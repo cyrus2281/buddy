@@ -1,0 +1,102 @@
+@import 'tailwindcss';
+
+/* Dark-first, near-black, one warm accent (PRD §8). The palette is small on
+   purpose: three surfaces, three text weights, one accent. */
+@theme {
+  --color-ink-950: #08080a;
+  --color-ink-900: #0c0c0f;
+  --color-ink-850: #121216;
+  --color-ink-800: #17171c;
+  --color-ink-700: #232329;
+  --color-ink-600: #35353d;
+
+  --color-fog-100: #f4f2ef;
+  --color-fog-300: #b9b5ae;
+  --color-fog-500: #78746d;
+
+  --color-ember-300: #ffc89a;
+  --color-ember-400: #ff9f5a;
+  --color-ember-500: #f97316;
+  --color-ember-600: #d95f0c;
+
+  --color-moss-400: #6fcf97;
+  --color-rust-400: #e5735c;
+
+  --ease-spring: linear(
+    0, 0.0088, 0.0347, 0.0766, 0.1329, 0.2019, 0.2818, 0.3704, 0.4652, 0.5634,
+    0.662, 0.7579, 0.848, 0.9294, 1.0001, 1.0587, 1.1044, 1.1369, 1.1566,
+    1.1643, 1.1613, 1.1493, 1.1301, 1.1058, 1.0784, 1.0498, 1.0218, 0.9957,
+    0.9727, 0.9535, 0.9385, 0.9278, 0.9214, 0.9188, 0.9196, 0.9231, 0.9288,
+    0.936, 0.9442, 0.9528, 0.9614, 0.9696, 0.9772, 0.9839, 0.9897, 0.9944,
+    0.9982, 1.001, 1.003, 1.0042, 1
+  );
+}
+
+* {
+  -webkit-font-smoothing: antialiased;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  background: var(--color-ink-950);
+  color: var(--color-fog-100);
+  font-family:
+    -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Inter', system-ui, sans-serif;
+  font-size: 13px;
+  overflow: hidden;
+  user-select: none;
+  cursor: default;
+}
+
+/* The HUD floats over a vibrancy layer painted by macOS; a body background
+   would cover the glass. */
+body.hud {
+  background: transparent;
+}
+
+::-webkit-scrollbar {
+  width: 9px;
+  height: 9px;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--color-ink-700);
+  border-radius: 999px;
+  border: 2px solid transparent;
+  background-clip: content-box;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--color-ink-600);
+  background-clip: content-box;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+input,
+textarea {
+  user-select: text;
+}
+
+.drag-region {
+  -webkit-app-region: drag;
+}
+.no-drag {
+  -webkit-app-region: no-drag;
+}
+
+/* PRD §8: motion is disabled, not merely shortened, under reduced motion. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}

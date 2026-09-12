@@ -9,5 +9,8 @@
     "resolveJsonModule": true,
     "noEmit": true
   },
-  "include": ["prompts/**/*.ts", "evals/**/*.ts", "src/**/*.ts"]
+  "include": [
+    "prompts/**/*.ts",
+    "evals/**/*.ts"
+  ]
 }

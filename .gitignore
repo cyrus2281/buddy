@@ -4,3 +4,7 @@ out/
 .DS_Store
 .env
 evals/**/runs/
+release/
+sidecar/build/
+spike/*/BuddySpike.app
+spike/*/buddyd-spike

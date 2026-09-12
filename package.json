@@ -4,16 +4,82 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "eval:goal": "tsx evals/goal-inference/run.ts"
+    "dev": "npm run build:sidecar && electron-vite dev",
+    "build": "npm run build:sidecar && electron-vite build",
+    "build:sidecar": "bash sidecar/build.sh",
+    "start": "electron-vite preview",
+    "dist": "npm run build && electron-builder",
+    "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.node.json",
+    "eval:goal": "tsx evals/goal-inference/run.ts",
+    "postinstall": "electron-rebuild -f -w better-sqlite3",
+    "rebuild": "electron-rebuild -f -w better-sqlite3",
+    "check:m1": "electron-vite build && electron out/main/m1-checks.js"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.125.0",
+    "better-sqlite3": "^13.0.3",
     "zod": "^4.6.2"
   },
   "devDependencies": {
+    "@tailwindcss/vite": "^4.3.3",
+    "@types/better-sqlite3": "^9.6.0",
     "@types/node": "^22.20.2",
-    "electron": "^44.3.0",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "@vitejs/plugin-react": "^5.2.0",
+    "electron": "44.3.0",
+    "electron-builder": "^26.15.3",
+    "electron-vite": "^5.0.0",
+    "framer-motion": "^13.2.0",
+    "react": "^19.3.0",
+    "react-dom": "^19.3.0",
+    "tailwindcss": "^4.3.3",
     "tsx": "^4.19.0",
-    "typescript": "^5.7.0"
+    "typescript": "^5.7.0",
+    "vite": "^7.3.6"
+  },
+  "main": "out/main/index.js",
+  "description": "A macOS assistant that watches how you work and finishes it for you.",
+  "build": {
+    "appId": "com.cyrus.buddy",
+    "productName": "buddy",
+    "copyright": "buddy",
+    "directories": {
+      "output": "release",
+      "buildResources": "build"
+    },
+    "files": [
+      "out/**/*",
+      "package.json",
+      "!node_modules/better-sqlite3/build/Release/obj.target"
+    ],
+    "extraFiles": [
+      {
+        "from": "sidecar/build/buddyd",
+        "to": "MacOS/buddyd"
+      }
+    ],
+    "mac": {
+      "category": "public.app-category.productivity",
+      "target": [
+        {
+          "target": "dmg",
+          "arch": [
+            "arm64"
+          ]
+        }
+      ],
+      "hardenedRuntime": false,
+      "gatekeeperAssess": false,
+      "identity": "buddy Local Dev",
+      "extendInfo": {
+        "NSScreenCaptureUsageDescription": "buddy captures your screen to build a memory of what you are working on. Screenshots stay on this machine and are deleted after the retention window.",
+        "NSAppleEventsUsageDescription": "buddy controls other apps to finish the work you were doing.",
+        "LSUIElement": 1
+      }
+    },
+    "dmg": {
+      "sign": false
+    }
   }
 }

@@ -436,14 +436,64 @@ Both profiles in v1 costs very little extra because they share §7.2's enforceme
 
 | # | Risk | Mitigation |
 |---|---|---|
-| **R1** | TCC does not attribute the sidecar's capture to the parent app bundle, so Screen Recording appears granted but returns black frames. | **Spike this in the first hour of Day 1.** Sidecar lives in `Contents/MacOS/` and is signed with the same identity. Fallback: capture via Electron `desktopCapturer` (also ScreenCaptureKit-backed), keep input and AX in Swift. |
-| **R2** | Ad-hoc signature changes each build and silently revokes Screen Recording. | Free self-signed cert from Keychain Access, reused across builds. Settings shows live permission state so a revocation is visible rather than mysterious. |
+| **R1** | TCC does not attribute the sidecar's capture to the parent app bundle, so Screen Recording appears granted but returns black frames. | **Spiked on Day 1 — see §11.1. Outcome: the split holds; no fallback needed.** Sidecar lives in `Contents/MacOS/` and is signed with the same identity. |
+| **R2** | Ad-hoc signature changes each build and silently revokes Screen Recording. | **Reproduced during the R1 spike — see §11.1. This is not theoretical; budget for it.** `./scripts/make-signing-cert.sh` creates the free self-signed cert and is a required first-run step. Settings shows live permission state so a revocation is visible rather than mysterious. |
 | **R3** | Coordinate scale factor wrong on external displays → clicks land in the wrong place, possibly destructively. | §6.2 guard, a startup assertion that logs loudly when scale ≠ 1.0, the factor recorded per step in the run log, and attended mode as the default. |
 | **R4** | Goal inference is confidently wrong and buddy does the wrong task well. | Confidence threshold with a two-guess fallback, evidence chips so the user can check the reasoning in one glance, explicit confirmation before every run, and amendable goal text. |
 | **R5** | Observation cost runs away. | Tiered pipeline, pHash dedupe, Haiku for bulk, a hard daily cap that pauses T2/T3, and a live spend meter. |
 | **R6** | Notes are vague and useless, making activation feel like magic that doesn't work. | Structured outputs with required evidence fields; notes are user-editable; the goal-inference prompt is the highest-leverage thing to iterate on and should get real Day 3 time. |
 | **R7** | Prompt injection from screen content. | §7.4. Screen content is data. No on-screen text can change the profile, budgets, allowlist, or authorize a gated action. |
 | **R8** | `better-sqlite3` native module fails against the Electron ABI. | `electron-rebuild` in `postinstall`, pinned Electron version. Known quantity, 20-minute fix. |
+
+
+### 11.1 R1 spike result — Day 1
+
+**Verdict: the Electron + Swift sidecar split holds. No fallback to
+`desktopCapturer` is needed, and none was implemented.**
+
+What was tested, in the production arrangement: `buddyd` in
+`release/mac-arm64/buddy.app/Contents/MacOS/`, beside the Electron executable,
+signed with the same identity, spawned from the Electron main process over
+JSON-RPC, capturing one frame via `SCScreenshotManager.captureImage`.
+
+Evidence:
+
+- **Capture works and the frames are real.** 1728×1117, 615 KB PNG, sampled
+  max-luma 251 against a black-frame threshold of 40 — screen content, not a
+  black rectangle. `buddyd` was a separately-signed child process using the
+  responsible parent's grant, which is the structural question R1 asks.
+- **Coordinate scale is 1.0** on the 16" internal display (1728×1117 = 1.93 MP,
+  inside the 2576 px / 3.75 MP ceiling), exactly as §6.2 predicted. The startup
+  assertion fires and logs when it is not, and the factor travels on every
+  captured frame.
+- **The whole M1 loop runs end to end** on this arrangement: sidecar spawn →
+  permission poll → T0 signals → T1 capture → pHash dedupe → vault → retention.
+
+**What the spike actually cost a morning was R2, not R1.** The failure looked
+exactly like the R1 black-frame scenario and was not:
+
+> Screen Recording granted, System Settings showing the toggle **ON**, and
+> `SCShareableContent` returning `-3801 "The user declined TCCs"` — from *both*
+> the Swift sidecar and Electron's own `desktopCapturer`.
+
+The cause is that macOS records a TCC grant against the bundle's `cdhash`. An
+ad-hoc signature produces a new `cdhash` on every `codesign` run, so re-signing
+after a grant silently invalidates it while the UI keeps showing it as granted.
+Both capture paths failing identically is the tell: when the sidecar and the
+parent's own API fail the same way, it is the bundle's grant that is broken, not
+the attribution of the sidecar's call.
+
+Two consequences worth carrying into M2 and M4:
+
+1. **`./scripts/make-signing-cert.sh` is a required first-run step**, not an
+   optional nicety. Ad-hoc signing costs a re-grant per build and makes every
+   capture bug ambiguous.
+2. **"Granted" in System Settings is not evidence that capture works.** The
+   permission panel already polls the real API every two seconds rather than
+   trusting a cached status, and that is the right call — but a user staring at
+   an ON toggle and a blind buddy needs the app to say *"macOS reports this
+   granted, but capture is failing"*. Worth a line in Settings in M4.
+
 
 ---
 
