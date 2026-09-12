@@ -1078,10 +1078,22 @@ async function run() {
         skip('Accessibility is not granted to this buddyd, so no CGEvent can be posted.');
       }
       const before = await rpc('input', { action: 'cursor_position' });
-      await rpc('input', { action: 'mouse_move', coordinate: [420, 240] });
-      const after = await rpc('input', { action: 'cursor_position' });
-      eq(after.x, 420, 'the pointer is where we put it');
-      eq(after.y, 240, 'on both axes');
+
+      // This is the one check that asserts on global machine state: a hand on
+      // the real mouse between the move and the read fails it, and that is not
+      // a coordinate bug. A genuine translation bug misses every attempt, so
+      // retry and fail only if it never lands. (Seen in the wild: expected 420,
+      // got 652, while direct dispatch was landing 5/5 exactly.)
+      let after = { x: -1, y: -1 };
+      let landed = false;
+      const attempts = 3;
+      for (let i = 0; i < attempts && !landed; i++) {
+        await rpc('input', { action: 'mouse_move', coordinate: [420, 240] });
+        after = await rpc('input', { action: 'cursor_position' });
+        landed = after.x === 420 && after.y === 240;
+      }
+      ok(landed, `the pointer is where we put it (last read ${after.x},${after.y})`);
+
       await rpc('input', { action: 'mouse_move', coordinate: [before.x, before.y] });
       return `pointer moved ${before.x},${before.y} → 420,240 and back`;
     });
