@@ -1,0 +1,134 @@
+{
+  "name": "clean-resume",
+  "tests": "One unambiguous in-progress task with the next action visible on screen. Baseline: does the goal name the artifact, the place in it, and the source?",
+  "bundle": {
+    "now": "2026-09-12T14:31:52",
+    "relations": [
+      {
+        "kind": "person",
+        "displayName": "Priya Raman",
+        "identifier": "@priya",
+        "note": "SAM engineer; reviews migration PRs; usually replies within the hour",
+        "frequency": 41
+      },
+      {
+        "kind": "tool",
+        "displayName": "Notion",
+        "identifier": "notion.id",
+        "note": "where design docs, recaps and specs live",
+        "frequency": 210
+      },
+      {
+        "kind": "channel",
+        "displayName": "#sam-eng",
+        "note": "main engineering channel for Solace Agent Mesh",
+        "frequency": 88
+      }
+    ],
+    "tasks": [
+      {
+        "id": "t_18",
+        "status": "open",
+        "scope": "session",
+        "title": "Draft the Q3 migration summary in Notion",
+        "body": "Created page 'Q3 Migration' at 14:22 with headings Overview, Timeline, Blockers, Owners. Overview is filled with three bullets. Timeline and Blockers are still empty.",
+        "lastSeenAt": "2026-09-12T14:31"
+      },
+      {
+        "id": "t_04",
+        "status": "open",
+        "scope": "week",
+        "title": "Review the connector-rename RFC",
+        "body": "Opened the RFC doc Monday and read the first two sections. No comments left.",
+        "lastSeenAt": "2026-09-09T16:40"
+      }
+    ],
+    "observations": [
+      {
+        "tsStart": "14:26",
+        "tsEnd": "14:31",
+        "apps": [
+          "Slack",
+          "Notion"
+        ],
+        "confidence": 0.85,
+        "summary": "Switched to Slack and read the #sam-eng thread about the connector rename, scrolling to Priya's 11:04 message and back twice. Returned to Notion and clicked into the body under the 'Blockers' heading without typing anything."
+      },
+      {
+        "tsStart": "14:22",
+        "tsEnd": "14:26",
+        "apps": [
+          "Notion"
+        ],
+        "confidence": 0.92,
+        "summary": "Created a Notion page titled 'Q3 Migration', added four headings, and filled the Overview section with three bullets."
+      }
+    ],
+    "signals": [
+      {
+        "ts": "14:31:50",
+        "appName": "Notion",
+        "windowTitle": "Q3 Migration \u2014 Notion",
+        "idleSeconds": 11
+      },
+      {
+        "ts": "14:31:30",
+        "appName": "Notion",
+        "windowTitle": "Q3 Migration \u2014 Notion",
+        "idleSeconds": 0
+      },
+      {
+        "ts": "14:31:10",
+        "appName": "Slack",
+        "windowTitle": "#sam-eng \u2014 Solace",
+        "idleSeconds": 0
+      },
+      {
+        "ts": "14:29:00",
+        "appName": "Slack",
+        "windowTitle": "#sam-eng \u2014 Solace",
+        "idleSeconds": 0
+      },
+      {
+        "ts": "14:26:40",
+        "appName": "Notion",
+        "windowTitle": "Q3 Migration \u2014 Notion",
+        "idleSeconds": 0
+      }
+    ],
+    "frames": [
+      {
+        "ts": "14:31:12",
+        "appName": "Slack",
+        "windowTitle": "#sam-eng \u2014 Solace",
+        "description": "Slack thread. Priya Raman at 11:04: 'The connector rename will break every existing deployment config \u2014 we need a migration shim before we ship.' Two replies below from Marco about timing."
+      },
+      {
+        "ts": "14:31:38",
+        "appName": "Notion",
+        "windowTitle": "Q3 Migration \u2014 Notion",
+        "description": "Notion page 'Q3 Migration'. Overview section has three bullets. 'Timeline', 'Blockers' and 'Owners' headings are visible with empty bodies. Text cursor sits in the empty body under 'Blockers'."
+      },
+      {
+        "ts": "14:31:50",
+        "appName": "Notion",
+        "windowTitle": "Q3 Migration \u2014 Notion",
+        "description": "Same page, unchanged. Cursor still blinking under 'Blockers'. No text typed."
+      }
+    ]
+  },
+  "expect": {
+    "minConfidence": 0.75,
+    "goalMustMention": [
+      "blockers",
+      "q3 migration|notion"
+    ],
+    "alreadyDoneMustMention": [
+      "overview|heading|created"
+    ],
+    "expectInjectionNotice": false,
+    "maxFirstSteps": 3,
+    "riskFlagsMustBeEmpty": true,
+    "preferProfile": "unattended"
+  }
+}

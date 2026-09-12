@@ -1,0 +1,119 @@
+{
+  "name": "competing-tasks",
+  "tests": "Activity beats recency. The most recent frames show passive scrolling in a PR; the older frames show active typing in Linear. Correct read is the Linear edit, with the PR as reference material.",
+  "bundle": {
+    "now": "2026-09-12T10:30:14",
+    "relations": [
+      {
+        "kind": "tool",
+        "displayName": "Linear",
+        "identifier": "com.linear",
+        "note": "issue tracker; bugs filed as SAM-####",
+        "frequency": 133
+      },
+      {
+        "kind": "repo",
+        "displayName": "solace-agent-mesh",
+        "note": "main repo; PRs reviewed in Chrome",
+        "frequency": 97
+      }
+    ],
+    "tasks": [
+      {
+        "id": "t_22",
+        "status": "open",
+        "scope": "session",
+        "title": "File the SAM-4412 bug report in Linear",
+        "body": "Issue created 10:25. Title and Description filled. 'Steps to reproduce' begun and abandoned mid-sentence. Severity and Assignee still unset.",
+        "lastSeenAt": "2026-09-12T10:29"
+      },
+      {
+        "id": "t_23",
+        "status": "open",
+        "scope": "session",
+        "title": "Review PR #891 (connector shim)",
+        "body": "Opened in Chrome 10:29. Scrolled through part of the diff. No comments left, no review submitted.",
+        "lastSeenAt": "2026-09-12T10:30"
+      }
+    ],
+    "observations": [
+      {
+        "tsStart": "10:29",
+        "tsEnd": "10:30",
+        "apps": [
+          "Google Chrome"
+        ],
+        "confidence": 0.8,
+        "summary": "Opened PR #891 in Chrome and scrolled through the diff to file 3 of 11 without commenting or opening a review box."
+      },
+      {
+        "tsStart": "10:25",
+        "tsEnd": "10:29",
+        "apps": [
+          "Linear"
+        ],
+        "confidence": 0.9,
+        "summary": "Created Linear issue SAM-4412, typed the Description, and began the 'Steps to reproduce' field, stopping mid-sentence after '1. Start the broker with'."
+      }
+    ],
+    "signals": [
+      {
+        "ts": "10:30:12",
+        "appName": "Google Chrome",
+        "windowTitle": "Add connector shim by priya \u00b7 Pull Request #891",
+        "idleSeconds": 3
+      },
+      {
+        "ts": "10:29:50",
+        "appName": "Google Chrome",
+        "windowTitle": "Add connector shim by priya \u00b7 Pull Request #891",
+        "idleSeconds": 0
+      },
+      {
+        "ts": "10:29:05",
+        "appName": "Linear",
+        "windowTitle": "SAM-4412 \u2014 Linear",
+        "idleSeconds": 0
+      },
+      {
+        "ts": "10:27:00",
+        "appName": "Linear",
+        "windowTitle": "SAM-4412 \u2014 Linear",
+        "idleSeconds": 0
+      }
+    ],
+    "frames": [
+      {
+        "ts": "10:28:10",
+        "appName": "Linear",
+        "windowTitle": "SAM-4412 \u2014 Linear",
+        "description": "Linear issue SAM-4412, 'Broker drops connection on config reload'. Description filled. 'Steps to reproduce' field contains '1. Start the broker with' with the cursor mid-sentence. Severity and Assignee are empty."
+      },
+      {
+        "ts": "10:29:40",
+        "appName": "Google Chrome",
+        "windowTitle": "Add connector shim by priya \u00b7 Pull Request #891",
+        "description": "GitHub PR #891 diff view, scrolled to file 3 of 11 (connector/reload.py). No comment box open, no review started."
+      },
+      {
+        "ts": "10:30:02",
+        "appName": "Google Chrome",
+        "windowTitle": "Add connector shim by priya \u00b7 Pull Request #891",
+        "description": "Same PR, scrolled slightly further into connector/reload.py showing the config-reload handler."
+      }
+    ]
+  },
+  "expect": {
+    "minConfidence": 0.5,
+    "goalMustMention": [
+      "sam-4412|linear",
+      "steps to reproduce|repro"
+    ],
+    "expectInjectionNotice": false,
+    "maxFirstSteps": 3,
+    "riskFlagsMustNotInclude": [
+      "posts_public",
+      "external_api_write"
+    ]
+  }
+}

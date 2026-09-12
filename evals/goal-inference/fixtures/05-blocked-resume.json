@@ -1,0 +1,131 @@
+{
+  "name": "blocked-resume",
+  "tests": "Story B. A waiting task's blocker has just been answered on screen. Correct read is resuming the blocked work using the answer, not re-asking the question.",
+  "bundle": {
+    "now": "2026-09-12T15:12:40",
+    "relations": [
+      {
+        "kind": "person",
+        "displayName": "Priya Raman",
+        "identifier": "@priya",
+        "note": "SAM engineer; reviews migration PRs; usually replies within the hour",
+        "frequency": 41
+      },
+      {
+        "kind": "tool",
+        "displayName": "Notion",
+        "identifier": "notion.id",
+        "note": "where design docs, recaps and specs live",
+        "frequency": 210
+      },
+      {
+        "kind": "channel",
+        "displayName": "#sam-eng",
+        "note": "main engineering channel for Solace Agent Mesh",
+        "frequency": 88
+      }
+    ],
+    "tasks": [
+      {
+        "id": "t_11",
+        "status": "waiting",
+        "scope": "day",
+        "title": "Get Priya's call on the connector rename before writing the Blockers section",
+        "body": "Asked in #sam-eng at 11:04 whether to ship a migration shim or break configs outright. No reply as of 14:31, so the Blockers section was left empty.",
+        "lastSeenAt": "2026-09-12T14:31"
+      },
+      {
+        "id": "t_18",
+        "status": "open",
+        "scope": "session",
+        "title": "Draft the Q3 migration summary in Notion",
+        "body": "Page 'Q3 Migration' has headings Overview, Timeline, Blockers, Owners. Overview and Timeline are filled. Blockers is empty pending Priya's answer.",
+        "lastSeenAt": "2026-09-12T14:31"
+      }
+    ],
+    "observations": [
+      {
+        "tsStart": "15:10",
+        "tsEnd": "15:12",
+        "apps": [
+          "Slack"
+        ],
+        "confidence": 0.86,
+        "summary": "Returned to Slack after 40 minutes away and read a new reply from Priya in the #sam-eng connector-rename thread."
+      },
+      {
+        "tsStart": "14:26",
+        "tsEnd": "14:31",
+        "apps": [
+          "Slack",
+          "Notion"
+        ],
+        "confidence": 0.85,
+        "summary": "Read the #sam-eng thread, returned to Notion, clicked into the empty 'Blockers' body and typed nothing before going idle."
+      }
+    ],
+    "signals": [
+      {
+        "ts": "15:12:38",
+        "appName": "Slack",
+        "windowTitle": "#sam-eng \u2014 Solace",
+        "idleSeconds": 5
+      },
+      {
+        "ts": "15:12:10",
+        "appName": "Slack",
+        "windowTitle": "#sam-eng \u2014 Solace",
+        "idleSeconds": 0
+      },
+      {
+        "ts": "15:10:20",
+        "appName": "Slack",
+        "windowTitle": "#sam-eng \u2014 Solace",
+        "idleSeconds": 0
+      },
+      {
+        "ts": "14:33:00",
+        "appName": "Notion",
+        "windowTitle": "Q3 Migration \u2014 Notion",
+        "idleSeconds": 120
+      }
+    ],
+    "frames": [
+      {
+        "ts": "15:11:02",
+        "appName": "Slack",
+        "windowTitle": "#sam-eng \u2014 Solace",
+        "description": "Slack thread. Priya Raman at 15:09: 'Go with the shim \u2014 keep the old connector names as aliases for one full release, then drop them in 4.0. Config break is not acceptable for the enterprise tier.' Unread divider sits just above this message."
+      },
+      {
+        "ts": "15:12:20",
+        "appName": "Slack",
+        "windowTitle": "#sam-eng \u2014 Solace",
+        "description": "Same thread, scrolled up to re-read the original 11:04 question and Marco's timing replies."
+      },
+      {
+        "ts": "15:12:39",
+        "appName": "Slack",
+        "windowTitle": "#sam-eng \u2014 Solace",
+        "description": "Back at Priya's 15:09 reply. No compose box open, nothing typed."
+      }
+    ]
+  },
+  "expect": {
+    "minConfidence": 0.65,
+    "goalMustMention": [
+      "blockers|shim",
+      "notion|q3 migration"
+    ],
+    "goalMustNotMention": [
+      "ask priya|ask her|follow up with priya"
+    ],
+    "alreadyDoneMustMention": [
+      "asked|11:04|overview|timeline|replied|answer"
+    ],
+    "expectInjectionNotice": false,
+    "maxFirstSteps": 3,
+    "riskFlagsMustBeEmpty": true,
+    "preferProfile": "unattended"
+  }
+}

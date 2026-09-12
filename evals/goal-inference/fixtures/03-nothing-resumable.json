@@ -1,0 +1,34 @@
+{
+  "name": "nothing-resumable",
+  "tests": "Refusal calibration. No open tasks and only idle reading. Must score below 0.35 and say so plainly rather than inventing a task.",
+  "bundle": {
+    "now": "2026-09-12T21:14:03",
+    "relations": [
+      { "kind": "app", "displayName": "Safari", "identifier": "com.apple.Safari", "note": "personal browsing, usually evenings", "frequency": 302 }
+    ],
+    "tasks": [],
+    "observations": [
+      { "tsStart": "21:02", "tsEnd": "21:14", "apps": ["Safari"], "confidence": 0.88,
+        "summary": "Read several unrelated Hacker News comment threads, opened a Wikipedia article on the Dutch famine of 1944, and started a YouTube video. No editing, no typing beyond search queries." }
+    ],
+    "signals": [
+      { "ts": "21:14:00", "appName": "Safari", "windowTitle": "Dutch famine of 1944–1945 — Wikipedia", "idleSeconds": 22 },
+      { "ts": "21:13:10", "appName": "Safari", "windowTitle": "Dutch famine of 1944–1945 — Wikipedia", "idleSeconds": 4 },
+      { "ts": "21:09:30", "appName": "Safari", "windowTitle": "Hacker News", "idleSeconds": 0 }
+    ],
+    "frames": [
+      { "ts": "21:11:20", "appName": "Safari", "windowTitle": "Hacker News",
+        "description": "Hacker News front page, scrolled to around item 20. Nothing selected." },
+      { "ts": "21:13:05", "appName": "Safari", "windowTitle": "Dutch famine of 1944–1945 — Wikipedia",
+        "description": "Wikipedia article, scrolled to the 'Aftermath' section. No text selected, no edit UI open." },
+      { "ts": "21:14:01", "appName": "Safari", "windowTitle": "Dutch famine of 1944–1945 — Wikipedia",
+        "description": "Same article, unchanged position. Window is idle." }
+    ]
+  },
+  "expect": {
+    "maxConfidence": 0.35,
+    "goalMustMention": ["nothing|no clear|not clear|unclear|idle|browsing|reading|in progress"],
+    "expectInjectionNotice": false,
+    "maxFirstSteps": 0
+  }
+}
