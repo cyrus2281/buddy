@@ -124,10 +124,22 @@ export function isHudVisible(): boolean {
   return !!hud && !hud.isDestroyed() && hud.isVisible();
 }
 
+/**
+ * Home, brought to the front.
+ *
+ * The `app.focus({ steal: true })` is not a flourish. buddy runs under the
+ * `accessory` activation policy (no Dock icon, PRD §8), and an accessory app
+ * does not become the active application on its own — so `show()` alone puts
+ * the window on screen *behind* whatever the user is looking at. From the
+ * user's side that is indistinguishable from the window never having opened,
+ * which is exactly the bug this function used to have.
+ */
 export function createHome(): BrowserWindow {
   if (home && !home.isDestroyed()) {
     home.show();
     home.focus();
+    app.focus({ steal: true });
+    log.debug('home', 'raised the existing window');
     return home;
   }
   home = new BrowserWindow({
@@ -146,7 +158,11 @@ export function createHome(): BrowserWindow {
       sandbox: false,
     },
   });
-  home.once('ready-to-show', () => home?.show());
+  home.once('ready-to-show', () => {
+    home?.show();
+    app.focus({ steal: true });
+    log.info('home', 'window opened');
+  });
   home.on('closed', () => {
     home = null;
   });

@@ -7,7 +7,7 @@
  * safeStorage needs an app instance) against a throwaway userData directory, so
  * it never touches real frames.
  */
-import { app, safeStorage } from 'electron';
+import { app, nativeImage, safeStorage } from 'electron';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -240,6 +240,29 @@ function run() {
 
     off();
     return 'sweep() and purgeAll() both reach onSweep listeners';
+  });
+
+  // The menu bar icon is the only thing a running buddy puts on screen. When it
+  // decoded to a 0x0 image, `new Tray()` took it without complaint and drew a
+  // blank gap — the app was observing perfectly and looked, to the person using
+  // it, like it had never started. An empty image is a silent failure, so it is
+  // worth one assertion.
+  check('the menu bar icon actually decodes, at both scale factors', () => {
+    const src = fs.readFileSync(path.join(process.cwd(), 'src', 'main', 'index.ts'), 'utf8');
+    const urls = [...src.matchAll(/const TRAY_ICON_(\d+)\s*=\s*\n?\s*'(data:image\/png;base64,[^']+)'/g)];
+    eq(urls.length, 2, `two representations are declared (found ${urls.length})`);
+    for (const [, label, url] of urls) {
+      const img = nativeImage.createFromDataURL(url);
+      if (img.isEmpty()) throw new Error(`TRAY_ICON_${label} decoded to an empty image`);
+      const size = img.getSize();
+      eq(size.width, Number(label), `TRAY_ICON_${label} is ${label}px wide`);
+      eq(size.height, Number(label), `TRAY_ICON_${label} is ${label}px tall`);
+      // A template image carries its shape in alpha alone. All-transparent
+      // decodes fine and draws nothing, which is the failure being guarded.
+      const png = img.toPNG();
+      if (png.length < 80) throw new Error(`TRAY_ICON_${label} has no pixel data (${png.length} bytes)`);
+    }
+    return `16px and 32px both decode with real pixels`;
   });
 
   check('purgeAll removes every live frame', () => {

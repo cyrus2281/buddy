@@ -32,8 +32,18 @@ npm install
 npm run dev
 ```
 
-buddy runs in the menu bar with no Dock icon. On first launch it opens its
-window and asks for **Screen Recording**; grant it in System Settings and buddy
+buddy runs in the menu bar with no Dock icon. Opening it from Finder or the
+Dock brings its window up; launching it at login does not, so it starts out of
+your way. Clicking the menu bar icon opens the window too.
+
+**If you cannot find the menu bar icon, your menu bar is probably full.** On a
+notched MacBook, macOS fills menu bar extras from the right and stops at the
+notch — once that space is used up it silently drops further items, buddy's
+included, with no error anywhere. Nothing is wrong with the app: the hotkey
+still works, and so does opening it from Finder. Quit a menu bar app or two if
+you want the icon back.
+
+On first launch it opens its window and asks for **Screen Recording**; grant it in System Settings and buddy
 notices within two seconds without a relaunch. **Accessibility** was optional in
 M1 (it improved window titles and enabled password-field detection) and is
 **required in M2** — without it buddy cannot click, type, read the element under

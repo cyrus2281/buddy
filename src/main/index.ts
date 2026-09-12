@@ -89,13 +89,40 @@ function showHudNow() {
   showHud();
 }
 
-function createTray() {
-  // A 16pt template image: macOS recolours it for light and dark menu bars.
-  const icon = nativeImage.createFromDataURL(
-    'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAYAAAAf8/9hAAAAcElEQVR42mNgGAWjYBSMglEwCkbBKBgFo2AUjIJRMApGwSgYBaNgFIyCUTAKRsEoGAWjYBSMglEwCkbBKBgFo2AUjIJRMApGwSgYBaNgFIyCUTAKRsEoGAWjYBSMglEwCkbBKBgFo2AU0BsAAOwAAWHMKMoAAAAASUVORK5CYII=',
-  );
+/// The menu bar icon: a rounded-square aperture, the same mark the HUD uses, so
+/// the two read as one product. A template image, so macOS recolours it for
+/// light and dark menu bars and for the highlighted state.
+///
+/// Two representations rather than one, because a 16pt icon upscaled to a
+/// Retina menu bar is visibly soft. And asserted non-empty at startup, because
+/// the first version of this constant was a corrupt PNG: `nativeImage` returned
+/// a 0x0 image, `new Tray()` accepted it without complaint, and the result was
+/// a menu bar item that occupied space and drew nothing. The app was running
+/// perfectly and looked, to the only person who mattered, like it had not
+/// launched.
+const TRAY_ICON_16 =
+  'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAYAAAAf8/9hAAAAN0lEQVR42mNggIA+BgaG/yTiPgYKNKMY8p9CPEgNgAcQEugjxQBcYCQZQHEgDrGERHFmoig7AwA7a9XZ/XO6jQAAAABJRU5ErkJggg==';
+const TRAY_ICON_32 =
+  'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAAAgElEQVR42u2X0QmAMBBDM4hr3SBd8hbpIBWlFq2K9OOMSAL5zqOldw1wVALgAEqQvWacNAHIgcG9c81sejN8D9GOvZC8XocTAZZsWvhmAQhg+NnYg1MUwOUIvVGKALABABOAAATwSwD6IKKPYm1DAYQB0L/l9GJCr2afKKe0ej4DuidgUue2pQsAAAAASUVORK5CYII=';
+
+function trayIcon(): Electron.NativeImage {
+  const icon = nativeImage.createFromDataURL(TRAY_ICON_16);
+  if (icon.isEmpty()) {
+    // Nothing here can recover a bad constant, but a loud line beats a silent
+    // blank space in the menu bar.
+    log.error('tray', 'the menu bar icon did not decode; the tray will be invisible');
+  }
+  icon.addRepresentation({ scaleFactor: 2, dataURL: TRAY_ICON_32 });
   icon.setTemplateImage(true);
-  tray = new Tray(icon);
+  return icon;
+}
+
+function createTray() {
+  tray = new Tray(trayIcon());
+  // Clicking the icon itself opens the window, rather than only ever dropping
+  // the menu: "click the thing, see the thing" is what people expect, and the
+  // menu is still one click away on the same item.
+  tray.on('click', () => createHome());
   updateTray();
 }
 
@@ -219,10 +246,19 @@ async function main() {
     setState('OBSERVING');
   } else {
     setState(s.paused ? 'PAUSED' : 'IDLE');
-    if (!perms.screenRecording) {
-      log.warn('app', 'Screen Recording not granted; opening the permissions window');
-      createHome();
-    }
+  }
+
+  // A menu bar app should not put a window on screen when the machine boots —
+  // but somebody who has just double-clicked the app is asking to see it, and
+  // an app that answers a double-click with nothing at all reads as broken
+  // however well it is running in the background. `wasOpenedAtLogin` is what
+  // separates the two, and it is the only thing that should.
+  const atLogin = app.getLoginItemSettings().wasOpenedAtLogin;
+  if (!perms.screenRecording) {
+    log.warn('app', 'Screen Recording not granted; opening the permissions window');
+    createHome();
+  } else if (!atLogin) {
+    createHome();
   }
 
   bindHotkeys();
@@ -295,6 +331,16 @@ function bindHotkeys() {
 
 app.on('window-all-closed', () => {
   // Menu-bar app: closing the window stops nothing. Quitting is the tray's job.
+});
+
+/// macOS sends this when the app is opened again while it is already running —
+/// a double-click in Finder, a click in the Dock, `open -a buddy`. Without a
+/// handler the event is swallowed and the app appears to do nothing, which is
+/// the same symptom as failing to launch. `second-instance` does not cover it:
+/// macOS activates the running app rather than starting a second process, so
+/// that event never fires on this path.
+app.on('activate', () => {
+  createHome();
 });
 
 app.on('will-quit', async (e) => {
