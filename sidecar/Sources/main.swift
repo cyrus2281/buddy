@@ -56,6 +56,24 @@ func handle(_ req: RPCRequest) {
         catch let e as RPCError { Out.error(id: req.id, e) }
         catch { Out.error(id: req.id, .internalError(String(describing: error))) }
 
+    case "target_info":
+        // The one call the M2 guardrail makes immediately before dispatching a
+        // CGEvent: frontmost app, focused element, page URL, and the element
+        // under the pointer, in a single round trip (PRD §7.2).
+        do { Out.result(id: req.id, try TargetInfo.snapshot(req.params)) }
+        catch let e as RPCError { Out.error(id: req.id, e) }
+        catch { Out.error(id: req.id, .internalError(String(describing: error))) }
+
+    case "watch_input":
+        // §7.3 kill switch 3. Buddy's own events carry Input.magic and are
+        // filtered; anything else fires a `human_input` notification.
+        do { Out.result(id: req.id, try InputMonitor.start()) }
+        catch let e as RPCError { Out.error(id: req.id, e) }
+        catch { Out.error(id: req.id, .internalError(String(describing: error))) }
+
+    case "unwatch_input":
+        Out.result(id: req.id, InputMonitor.stop())
+
     case "capture":
         guard let path = req.params["path"]?.stringValue else {
             Out.error(id: req.id, .invalidParams("capture requires `path`")); return

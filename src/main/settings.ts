@@ -9,6 +9,50 @@ import { DEFAULT_SETTINGS, type ExclusionRule, type Settings } from '../shared/t
 
 const KEY = 'settings.v1';
 
+/** Key names Electron's accelerator parser does not accept, and what it wants
+ *  instead. A stored `Control+Shift+Period` is a perfectly reasonable spelling
+ *  of ⌃⇧. and only fails because Electron takes the punctuation character
+ *  itself — and when the accelerator that fails is the abort hotkey, the cost
+ *  is a kill switch that silently does not exist (PRD §7.3). */
+const KEY_ALIASES: Record<string, string> = {
+  period: '.',
+  comma: ',',
+  slash: '/',
+  backslash: '\\',
+  semicolon: ';',
+  quote: "'",
+  apostrophe: "'",
+  grave: '`',
+  backtick: '`',
+  minus: '-',
+  hyphen: '-',
+  equal: '=',
+  equals: '=',
+  leftbracket: '[',
+  rightbracket: ']',
+  option: 'Alt',
+  opt: 'Alt',
+  cmd: 'Command',
+  ctrl: 'Control',
+  meta: 'Command',
+  super: 'Command',
+  esc: 'Escape',
+};
+
+/** Rewrites an accelerator into the spelling Electron accepts, or returns it
+ *  unchanged. Deliberately conservative: it renames tokens, never reorders or
+ *  drops them, so a combination it does not understand is passed through to
+ *  fail loudly rather than being silently turned into a different one. */
+export function normalizeAccelerator(accelerator: string): string {
+  return accelerator
+    .split('+')
+    .map((part) => {
+      const t = part.trim();
+      return KEY_ALIASES[t.toLowerCase()] ?? t;
+    })
+    .join('+');
+}
+
 const CLAMPS: Partial<Record<keyof Settings, [number, number]>> = {
   captureIntervalMs: [3_000, 300_000],
   signalIntervalMs: [1_000, 30_000],
@@ -44,6 +88,17 @@ class SettingsStore extends EventEmitter {
    *  and failing the whole save over one field is worse UX than correcting it. */
   private normalize(s: Settings): Settings {
     const out = { ...s };
+    for (const key of ['hotkey', 'abortHotkey'] as const) {
+      const fixed = normalizeAccelerator(out[key]);
+      if (fixed !== out[key]) {
+        log.info('settings', 'accelerator rewritten to a spelling Electron accepts', {
+          key,
+          from: out[key],
+          to: fixed,
+        });
+        out[key] = fixed;
+      }
+    }
     for (const [key, [lo, hi]] of Object.entries(CLAMPS) as [keyof Settings, [number, number]][]) {
       const v = out[key] as number;
       const clamped = Math.min(hi, Math.max(lo, Number.isFinite(v) ? v : (DEFAULT_SETTINGS[key] as number)));

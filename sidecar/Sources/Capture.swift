@@ -32,13 +32,20 @@ enum Capture {
         let scale: Double        // modelCoord / scale == screenPoint
         let phash: String
         let displayID: UInt32
+        /// The display's top-left in the global CGEvent coordinate space. Zero
+        /// on a single-display Mac; on a second display it is the offset the
+        /// executor must add, and omitting it puts every click on the wrong
+        /// screen (PRD §6.2).
+        let originX: Double
+        let originY: Double
 
         var dictionary: [String: Any] {
             ["path": pngPath, "bytes": bytes,
              "pixelWidth": pixelWidth, "pixelHeight": pixelHeight,
              "width": width, "height": height,
              "logicalWidth": logicalWidth, "logicalHeight": logicalHeight,
-             "scale": scale, "phash": phash, "displayId": Int(displayID)]
+             "scale": scale, "phash": phash, "displayId": Int(displayID),
+             "originX": originX, "originY": originY]
         }
     }
 
@@ -131,11 +138,17 @@ enum Capture {
         try png.write(to: url, options: .atomic)
         try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: path)
 
+        // CGDisplayBounds is in exactly the coordinate space CGEvent uses, so
+        // it is the right source for the offset rather than NSScreen's flipped
+        // frame.
+        let bounds = CGDisplayBounds(display.displayID)
         return Result(pngPath: path, bytes: png.count,
                       pixelWidth: native.width, pixelHeight: native.height,
                       width: outW, height: outH,
                       logicalWidth: logicalW, logicalHeight: logicalH,
-                      scale: scale, phash: hash, displayID: display.displayID)
+                      scale: scale, phash: hash, displayID: display.displayID,
+                      originX: Double(cropRect?.origin.x ?? bounds.origin.x),
+                      originY: Double(cropRect?.origin.y ?? bounds.origin.y))
     }
 
     private static func resize(_ image: CGImage, to size: CGSize) -> CGImage? {

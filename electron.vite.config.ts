@@ -15,6 +15,7 @@ export default defineConfig({
           // Built alongside the app so the M1 checks exercise the real modules
           // against the real Electron ABI rather than a reimplementation.
           'm1-checks': path.resolve('src/main/m1-checks.ts'),
+          'm2-checks': path.resolve('src/main/m2-checks.ts'),
         },
       },
     },

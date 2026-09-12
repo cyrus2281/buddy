@@ -57,7 +57,11 @@ buddy.app  (Electron shell, unsigned/self-signed — free to install)
 └── buddyd  (Swift binary, in Contents/MacOS/, JSON-RPC over stdio)
     ├── capture(display|window|region) → PNG, Retina→logical downscale
     ├── ax_tree(pid?) → accessibility tree (roles, titles, frames, values)
+    ├── target_info(x?,y?) → the guardrail's one pre-dispatch read: frontmost
+    │                        app, focused element, page URL, element under the
+    │                        pointer (§7.2)
     ├── input(action) → CGEvent synthesis
+    ├── watch_input() → event tap; pushes `human_input` for anything untagged
     ├── secure_input() → Bool  (IsSecureEventInputEnabled)
     ├── frontmost() → {bundleId, appName, windowTitle, idleSeconds}
     └── permissions() → {screenRecording, accessibility}
@@ -147,6 +151,7 @@ Continuous full-fidelity capture sent to a model is unaffordable and unnecessary
 
 - **Frames:** `expires_at = ts + retentionDays` (default 1, range 1–7). Purge sweep on launch and hourly; unlinks the file and tombstones the row.
 - **Notes, observations, runs:** kept indefinitely. Exportable as JSON. Deletable per-item and in bulk from the UI.
+- **Run-step screenshots** are the one exception to the daily purge, and they have to be: the Run Log is the trust surface (§8.5), and a log whose pictures vanish overnight cannot answer "what did buddy click". They live with the run under `runs/<id>/`, not in the frame vault, so the sweep never sees them — and deleting a run deletes them with it. The Run Log says so on its face rather than leaving the user to infer that one kind of screenshot outlives the other.
 - **Exclusion list:** bundle IDs and window-title regexes that are never captured. Ships pre-populated with 1Password, Keychain Access, and Passwords. Private/incognito browser windows are excluded by title heuristic. When the AX tree reports a focused `AXSecureTextField`, T1 skips the frame entirely.
 
 ### 5.2 Privacy, stated plainly
@@ -234,6 +239,8 @@ Only `screenshot` and `zoom` return images; the rest return `"OK"`.
 Plus **two custom tools**, which are where buddy beats a naive computer-use agent:
 
 - **`describe_focused_window`** → AX tree of the frontmost window (roles, titles, values, frames, enabled state). Returned alongside every screenshot so the model targets a named element instead of guessing a pixel. This is the largest single reliability win available.
+
+  **Implemented as both**, because hoping the model remembers to ask is not a reliability strategy: every `screenshot` and `zoom` tool_result carries the tree as a second content block automatically, *and* the tool stays callable so the model can re-read the tree after acting without paying for another image. Element frames are rendered as their centre coordinates, which is the number a click actually needs.
 - **`finish`** → the run's structured terminal outcome (§6.6). Ending via an explicit tool call rather than a prose `end_turn` makes standby and wakeups parseable instead of regex-scraped.
 
 ### 6.4 Input synthesis
@@ -336,7 +343,7 @@ Four, independent, all always live during `ACTING`:
 
 1. **Global hotkey** `⌥⌘.` — immediate hard stop.
 2. **Sentinel file** `~/.buddy/ABORT` — stat'd every turn. Works when the UI is wedged.
-3. **Human takeover** — a real keystroke or click during `ACTING` pauses the loop instantly. Buddy's own events are filtered by the `BUDDY_MAGIC` tag from §6.4, so it never trips on itself.
+3. **Human takeover** — a real keystroke or click during `ACTING` pauses the loop instantly. Buddy's own events are filtered by the `BUDDY_MAGIC` tag from §6.4, so it never trips on itself. Implemented as a **listen-only** `CGEventTap` on the session tap, watching key-down, the three mouse-downs, and scroll — listen-only so a wedged buddy cannot also wedge the user's keyboard. It ignores everything for its first 0.6 s, or the Return that confirmed the run reads as the user taking over from it.
 4. **Menu bar Stop** — always present, always enabled.
 
 ### 7.4 Prompt injection
@@ -415,6 +422,8 @@ Electron + React + Tailwind + Framer Motion scaffold · `buddyd` Swift binary wi
 ### M2 — Day 2: it acts ← *demo-critical*
 `AgentRunner` with `computer_toolset_20260801` · batch fail-stop semantics · `toolset_name` on every result · coordinate scaling with the ≤2576 px / ≤3.75 MP guard · `describe_focused_window` · `finish` tool · secure-input error path · **both profiles** and the shared guardrail enforcement point · all four kill switches · budgets · live Run Log · screenshot pruning + prompt caching.
 **Exit:** hotkey → typed goal → buddy completes a real two-app task end to end, and every kill switch actually stops it.
+
+**Status: built, and verified as far as this machine allows** — `npm run check:m2`. All four kill switches are fired mid-run against the real `AgentRunner` and shown to park it with its log intact; the guardrail matrix, batch fail-stop, the deny-parks rule, budgets, pruning, and the cache-breakpoint layout are all asserted mechanically rather than eyeballed. `BUDDY_MAGIC` is verified to discriminate for real: buddy's own synthesized keystroke does not trip the takeover switch and an identical keystroke from another process does. The model is a scripted client, so the one thing the checks cannot cover is a live Opus 5 run — see README, "What M2 verifies".
 
 ### M3 — Day 3: it remembers
 T2 observer (Haiku 4.5, structured output) · T3 rollup (Sonnet 5) into recap / relation / task notes · dedupe and merge for relations · goal inference from the Context Bundle, replacing M2's typed goal · Home + Notes UI with FTS5 · local OCR if time allows.

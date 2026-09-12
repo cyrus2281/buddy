@@ -53,14 +53,18 @@ indirect enum JSONValue {
     init(any: Any) {
         switch any {
         case is NSNull: self = .null
-        case let b as Bool: self = .bool(b)
-        case let i as Int: self = .int(i)
-        case let d as Double: self = .number(d)
+        // NSNumber must come first. Everything JSONSerialization produces for a
+        // number is an NSNumber, and `x as? Bool` succeeds on the NSNumbers 0
+        // and 1 — so a Bool case ahead of this one turns request id 1 into
+        // `true` and the very first call of a session never resolves.
         case let n as NSNumber:
             // NSNumber erases Bool/Int/Double; recover from the ObjC type code.
             if CFGetTypeID(n) == CFBooleanGetTypeID() { self = .bool(n.boolValue) }
             else if strcmp(n.objCType, "d") == 0 || strcmp(n.objCType, "f") == 0 { self = .number(n.doubleValue) }
             else { self = .int(n.intValue) }
+        case let b as Bool: self = .bool(b)
+        case let i as Int: self = .int(i)
+        case let d as Double: self = .number(d)
         case let s as String: self = .string(s)
         case let a as [Any]: self = .array(a.map { JSONValue(any: $0) })
         case let o as [String: Any]: self = .object(o.mapValues { JSONValue(any: $0) })

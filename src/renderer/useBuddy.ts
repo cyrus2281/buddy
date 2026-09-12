@@ -1,6 +1,16 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import type { BuddyApi, Snapshot } from '../shared/ipc.js';
-import type { AppState, CaptureStats, FrameRow, LogEntry, Permissions, Settings, SidecarStatus } from '../shared/types.js';
+import type {
+  AppState,
+  CaptureStats,
+  FrameRow,
+  LogEntry,
+  PendingGate,
+  Permissions,
+  RunView,
+  Settings,
+  SidecarStatus,
+} from '../shared/types.js';
 
 declare global {
   interface Window {
@@ -22,6 +32,9 @@ export function useBuddy() {
   const [state, setState] = useState<AppState>('IDLE');
   const [frames, setFrames] = useState<FrameRow[]>([]);
   const [logs, setLogs] = useState<LogEntry[]>([]);
+  const [run, setRun] = useState<RunView | null>(null);
+  const [gate, setGate] = useState<PendingGate | null>(null);
+  const [hotkeyIssues, setHotkeyIssues] = useState<{ label: string; accelerator: string }[]>([]);
 
   useEffect(() => {
     let alive = true;
@@ -34,6 +47,9 @@ export function useBuddy() {
       setSidecar(s.sidecar);
       setSettings(s.settings);
       setState(s.state);
+      setRun(s.activeRun);
+      setHotkeyIssues(s.hotkeyIssues);
+      setGate(s.activeRun?.gate ?? null);
       setFrames(await api.getRecentFrames(60));
       setLogs(await api.getLogs(200));
     })();
@@ -46,6 +62,14 @@ export function useBuddy() {
       api.onState(setState),
       api.onFrame((f) => setFrames((prev) => [f, ...prev].slice(0, 60))),
       api.onLog((e) => setLogs((prev) => [...prev, e].slice(-200))),
+      // The run view carries the gate, so a gate cleared by another window (or
+      // by a kill switch) disappears here too rather than lingering.
+      api.onRun((v) => {
+        setRun(v);
+        setGate(v.gate);
+      }),
+      api.onGate(setGate),
+      api.onHotkeyIssues(setHotkeyIssues),
     ];
     return () => {
       alive = false;
@@ -62,7 +86,7 @@ export function useBuddy() {
     [stats],
   );
 
-  return { snapshot, stats, permissions, sidecar, settings, state, frames, logs, update, keepRate };
+  return { snapshot, stats, permissions, sidecar, settings, state, frames, logs, run, gate, hotkeyIssues, update, keepRate };
 }
 
 export function formatBytes(n: number): string {

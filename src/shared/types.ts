@@ -39,12 +39,18 @@ export interface CaptureResult {
   scale: number;
   phash: string;
   displayId: number;
+  /** The display's top-left in the global CGEvent coordinate space. Zero on a
+   *  single-display Mac; the offset the executor adds on a second one. */
+  originX: number;
+  originY: number;
 }
 
 export interface DisplayInfo {
   id: number;
   width: number;
   height: number;
+  originX: number;
+  originY: number;
   backingScaleFactor: number;
   modelScale: number;
   isMain: boolean;
@@ -156,3 +162,146 @@ export const DEFAULT_SETTINGS: Settings = {
     { label: 'Private / Incognito windows', titlePattern: '(Private Browsing|Incognito)', builtin: true, enabled: true },
   ],
 };
+
+// ─────────────────────────────────────────────────────────────────────────────
+// M2 — the Operator (PRD §6, §7)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** Decided before the loop starts and immutable for the run. A run cannot
+ *  escalate its own permissions (PRD §6.1). */
+export type RunProfile = 'attended' | 'unattended';
+
+export type RunStatus =
+  | 'confirming'
+  | 'running'
+  | 'gated'
+  | 'done'
+  | 'waiting'
+  | 'needs_human'
+  | 'cancelled';
+
+/** What a `deny` or `confirm` is *about*. The policy matrix in PRD §7.1 is
+ *  keyed on this, so adding a profile is a row, not an implementation. */
+export type ActionClass =
+  | 'read'
+  | 'type_editor'
+  | 'send'
+  | 'purchase'
+  | 'credentials'
+  | 'delete'
+  | 'install'
+  | 'system_settings'
+  | 'off_allowlist';
+
+export type Decision = 'allow' | 'confirm' | 'deny';
+
+export interface GuardVerdict {
+  decision: Decision;
+  class: ActionClass;
+  /** One sentence, shown verbatim in the confirm gate and the run log. */
+  reason: string;
+  /** Which of §7.2's three signals produced this, in descending trust. */
+  signal: 'ax-tree' | 'app-domain' | 'keystroke-content' | 'action-kind';
+  /** What the action targets, for the gate copy: "the Send button", "notion.so". */
+  target: string;
+}
+
+export interface RunBudgets {
+  maxSteps: number;
+  maxWallClockMs: number;
+  maxCostUsd: number;
+}
+
+export const DEFAULT_BUDGETS: RunBudgets = {
+  maxSteps: 60,
+  maxWallClockMs: 10 * 60_000,
+  maxCostUsd: 2.0,
+};
+
+export interface BudgetUsage {
+  steps: number;
+  elapsedMs: number;
+  costUsd: number;
+  /** Non-null once a budget is blown; names which one. */
+  exceeded: 'steps' | 'time' | 'cost' | null;
+}
+
+export interface Allowlist {
+  /** macOS bundle IDs. Seeded from the goal's target apps and confirmed by the
+   *  user in the same keystroke as the goal (PRD §6.1). */
+  apps: string[];
+  /** Hostnames, matched on suffix so `notion.so` covers `www.notion.so`. */
+  domains: string[];
+}
+
+export interface RunStep {
+  runId: number;
+  idx: number;
+  tool: string;
+  input: unknown;
+  result: unknown;
+  framePath: string | null;
+  isError: boolean;
+  ts: number;
+  /** Present on every step: null when nothing was classified (a custom tool). */
+  verdict: GuardVerdict | null;
+  /** §6.2's scale factor, recorded per step so a misplaced click is diagnosable
+   *  from the log rather than by re-deriving what the display was doing. */
+  scale: number | null;
+}
+
+export interface RunOutcome {
+  status: 'done' | 'waiting' | 'needs_human';
+  summary: string;
+  wake?: { after_s: number; condition: string; max_attempts: number };
+}
+
+export interface RunRow {
+  id: number;
+  started_at: number;
+  ended_at: number | null;
+  profile: RunProfile;
+  goal: string;
+  status: RunStatus;
+  steps: number;
+  cost_usd: number;
+  outcome_json: string | null;
+}
+
+/** The pending confirm gate (PRD §8.1). Only ever one at a time: the loop is
+ *  blocked while it is open. */
+export interface PendingGate {
+  runId: number;
+  stepIdx: number;
+  action: string;
+  verdict: GuardVerdict;
+}
+
+export interface RunView {
+  id: number;
+  goal: string;
+  profile: RunProfile;
+  status: RunStatus;
+  startedAt: number;
+  endedAt: number | null;
+  budgets: RunBudgets;
+  usage: BudgetUsage;
+  allowlist: Allowlist;
+  steps: RunStep[];
+  outcome: RunOutcome | null;
+  /** Why the run stopped, when it stopped for a reason other than finishing. */
+  haltReason: string | null;
+  gate: PendingGate | null;
+  /** Live cache telemetry — a persistent zero means a silent invalidator
+   *  (PRD §6.5). */
+  cacheReadTokens: number;
+}
+
+export interface StartRunRequest {
+  goal: string;
+  profile: RunProfile;
+  allowlist: Allowlist;
+  budgets?: Partial<RunBudgets>;
+}
+
+export type KillSwitch = 'hotkey' | 'sentinel' | 'human-takeover' | 'stop-button';

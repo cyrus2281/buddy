@@ -9,8 +9,9 @@ import { sidecar } from './sidecar/supervisor.js';
 import { permissions } from './permissions.js';
 import { CaptureScheduler } from './capture/scheduler.js';
 import { hotkeys } from './hotkey.js';
-import { broadcast, createHome, createHud, hideHud, toggleHud, isHudVisible } from './windows.js';
-import { registerIpc, assertCoordinateScale } from './ipc.js';
+import { broadcast, createHome, createHud, hideHud, setHudSticky, showHud, toggleHud, isHudVisible } from './windows.js';
+import { registerIpc, assertCoordinateScale, setHotkeyIssues } from './ipc.js';
+import { operator } from './agent/orchestrator.js';
 import { CH } from '../shared/ipc.js';
 import type { AppState } from '../shared/types.js';
 
@@ -45,6 +46,21 @@ function updateTray() {
       { type: 'separator' },
       { label: 'Open buddy', click: () => createHome() },
       { label: 'Show HUD', accelerator: settings.get().hotkey, click: () => toggleHud() },
+      // §7.3 kill switch 4: always present, always enabled during ACTING, and
+      // reachable when every window is closed.
+      ...(operator.isRunning()
+        ? [
+            { type: 'separator' as const },
+            {
+              label: 'Stop the run',
+              accelerator: settings.get().abortHotkey,
+              click: () => {
+                operator.stop('stop-button');
+                showHudNow();
+              },
+            },
+          ]
+        : []),
       { type: 'separator' },
       {
         label: settings.get().paused ? 'Resume observing' : 'Pause observing',
@@ -59,6 +75,11 @@ function updateTray() {
       { label: 'Quit buddy', click: () => app.quit() },
     ]),
   );
+}
+
+/** Show the HUD and bring it forward, whatever it was doing. */
+function showHudNow() {
+  showHud();
 }
 
 function createTray() {
@@ -101,6 +122,9 @@ async function main() {
   registerIpc({ scheduler, getState: () => state, setState });
   createTray();
   createHud(); // built now so the hotkey is instant later
+  // buddy's own clicks steal focus from the HUD constantly; blur must not
+  // dismiss the window the Stop button lives on.
+  setHudSticky(() => operator.isRunning());
 
   // Retention runs before capture starts: a machine that was asleep overnight
   // should not accumulate a second day of frames before the first sweep.
@@ -140,6 +164,9 @@ async function main() {
     updateTray();
   });
   scheduler.on('frame', (f) => broadcast(CH.onFrame, f));
+  // The tray menu is rebuilt on every state change, which is what keeps the
+  // Stop item present for exactly as long as there is something to stop.
+  operator.on('update', () => updateTray());
   settings.on('changed', (next) => {
     scheduler.updateSettings(next);
     bindHotkeys();
@@ -171,34 +198,53 @@ function bindHotkeys() {
       label: 'Activate buddy',
       accelerator: s.hotkey,
       handler: () => {
+        // During a run the hotkey re-expands the HUD rather than dismissing it:
+        // hiding the thing with the Stop button on it is the wrong instinct.
+        if (operator.isRunning()) {
+          showHudNow();
+          return;
+        }
         if (isHudVisible()) {
           hideHud();
           setState(scheduler.isRunning() ? 'OBSERVING' : 'IDLE');
         } else {
-          toggleHud();
+          showHudNow();
           setState('ARMED');
         }
       },
     },
     {
-      // Registered from M1 so the binding is never available to something else
-      // by the time M2 needs it; the handler gains teeth when ACTING exists.
+      // §7.3 kill switch 1. Registered since M1 so the binding could never be
+      // taken by something else before M2 needed it.
       label: 'Abort run',
       accelerator: s.abortHotkey,
       handler: () => {
         log.warn('hotkey', 'abort pressed', { state });
+        if (operator.stop('hotkey')) {
+          // Show the HUD rather than hiding it: the user needs to see that it
+          // stopped and what it had done.
+          showHudNow();
+          return;
+        }
         hideHud();
         setState(scheduler.isRunning() ? 'OBSERVING' : 'IDLE');
       },
     },
   ]);
   const failed = results.filter((r) => !r.ok);
+  setHotkeyIssues(failed.map((f) => ({ label: f.label, accelerator: f.accelerator })));
   if (failed.length) {
+    // One of these is a kill switch. A log line is not enough: the UI has to
+    // say so at the moment the user is about to hand over the keyboard.
+    const abort = failed.find((f) => f.label === 'Abort run');
+    if (abort) {
+      log.error('hotkey', 'the abort kill switch is NOT registered', { accelerator: abort.accelerator });
+    }
     broadcast(CH.onLog, {
       t: Date.now(),
       level: 'warn' as const,
       scope: 'hotkey',
-      msg: `Could not register: ${failed.map((f) => f.accelerator).join(', ')} — another app may own it`,
+      msg: `Could not register: ${failed.map((f) => f.accelerator).join(', ')} — another app may own it, or it is not an accelerator Electron accepts`,
     });
   }
 }
@@ -210,6 +256,7 @@ app.on('window-all-closed', () => {
 app.on('will-quit', async (e) => {
   e.preventDefault();
   log.info('app', 'shutting down');
+  operator.stop('stop-button');
   hotkeys.unregisterAll();
   permissions.stop();
   retention.stop();

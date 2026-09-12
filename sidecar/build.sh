@@ -29,6 +29,7 @@ swiftc -O \
   Sources/System.swift \
   Sources/AXTree.swift \
   Sources/Input.swift \
+  Sources/Target.swift \
   Sources/main.swift
 
 # Signed here with the same identity as the app so a dev-mode run matches the

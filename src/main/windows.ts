@@ -17,6 +17,12 @@ const HUD_HEIGHT = 420;
 
 let hud: BrowserWindow | null = null;
 let home: BrowserWindow | null = null;
+let hudSticky: () => boolean = () => false;
+
+/** Set by the orchestrator wiring: true while a run is live. */
+export function setHudSticky(fn: () => boolean) {
+  hudSticky = fn;
+}
 
 function load(win: BrowserWindow, hash: string) {
   if (devUrl) void win.loadURL(`${devUrl}#${hash}`);
@@ -59,6 +65,9 @@ export function createHud(): BrowserWindow {
   hud.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
 
   hud.on('blur', () => {
+    // Never auto-dismiss while something is running: the Stop button is on this
+    // window, and buddy's own clicks move focus to other apps constantly.
+    if (hudSticky()) return;
     if (hud?.isVisible() && !process.env.BUDDY_HUD_STICKY) hideHud();
   });
   hud.on('closed', () => {
@@ -85,6 +94,17 @@ export function showHud() {
   win.focus();
   win.webContents.send('hud:shown');
   log.debug('hud', 'shown', { display: display.id });
+}
+
+/** The HUD grows and shrinks with what it is showing: a goal prompt, a live
+ *  step feed, or a collapsed pill. Anchored at the top so the header stays put
+ *  while the body changes size, which reads as growth rather than as a jump. */
+export function resizeHud(height: number) {
+  if (!hud || hud.isDestroyed()) return;
+  const next = Math.max(90, Math.min(Math.round(height), 760));
+  const b = hud.getBounds();
+  if (Math.abs(b.height - next) < 2) return;
+  hud.setBounds({ x: b.x, y: b.y, width: HUD_WIDTH, height: next }, false);
 }
 
 export function hideHud() {

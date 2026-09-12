@@ -5,12 +5,14 @@ import { Hud } from './views/Hud.js';
 import { Home } from './views/Home.js';
 import { SettingsView } from './views/SettingsView.js';
 import { Logs } from './views/Logs.js';
+import { RunLog } from './views/RunLog.js';
 import { StatusDot, useMotionSafe } from './components/primitives.js';
 
-type Tab = 'home' | 'settings' | 'logs';
+type Tab = 'home' | 'runs' | 'settings' | 'logs';
 
 const TABS: { id: Tab; label: string }[] = [
   { id: 'home', label: 'Home' },
+  { id: 'runs', label: 'Runs' },
   { id: 'settings', label: 'Settings' },
   { id: 'logs', label: 'Log' },
 ];
@@ -30,6 +32,11 @@ function Shell() {
   useEffect(() => {
     if (b.permissions && !b.permissions.screenRecording) setTab('settings');
   }, [b.permissions?.screenRecording]);
+
+  // A run in progress outranks whatever tab was last open.
+  useEffect(() => {
+    if (b.run && (b.run.status === 'running' || b.run.status === 'gated')) setTab('runs');
+  }, [b.run?.status]);
 
   return (
     <div className="flex h-full flex-col bg-ink-950">
@@ -83,6 +90,7 @@ function Shell() {
                 scaleWarning={b.snapshot?.scaleWarning ?? null}
               />
             )}
+            {tab === 'runs' && <RunLog activeRun={b.run} />}
             {tab === 'settings' && (
               <SettingsView
                 settings={b.settings}

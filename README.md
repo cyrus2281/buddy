@@ -3,10 +3,14 @@
 A macOS assistant that watches how you work and, on one keystroke, takes over
 and finishes it. See [`PRD.md`](PRD.md) for the full spec.
 
-**Milestone M1 — "it sees" — is complete.** buddy observes: it captures the
-screen on a timer, throws away frames that show nothing new, files the rest in a
-vault that empties itself daily, and opens a HUD on a global hotkey. It does not
-yet act; that is M2.
+**Milestones M1 ("it sees") and M2 ("it acts") are complete.** buddy observes —
+it captures the screen on a timer, throws away frames that show nothing new, and
+files the rest in a vault that empties itself daily. And it acts: press the
+hotkey, type what you want finished, confirm, and it drives the mouse and
+keyboard until the job is done, under guardrails it cannot talk its way past and
+four kill switches that stop it dead.
+
+It does not yet *infer* the goal — you type it. That is M3.
 
 ## Requirements
 
@@ -27,11 +31,18 @@ npm run dev
 
 buddy runs in the menu bar with no Dock icon. On first launch it opens its
 window and asks for **Screen Recording**; grant it in System Settings and buddy
-notices within two seconds without a relaunch. **Accessibility** is optional in
-M1 (it improves window titles and enables password-field detection) and required
-in M2.
+notices within two seconds without a relaunch. **Accessibility** was optional in
+M1 (it improved window titles and enabled password-field detection) and is
+**required in M2** — without it buddy cannot click, type, read the element under
+the pointer, or tell your keystrokes from its own. Grant it to `buddyd`, not
+just to the app: in development the sidecar is its own binary and gets its own
+TCC entry.
 
-Press **⌥⌘Space** to open the HUD, **Esc** to dismiss it.
+Press **⌥⌘Space** to open the HUD, **Esc** to dismiss it. Type a goal, press
+Enter, confirm the profile and the allowlist, and press Enter again to run.
+
+**⌥⌘.** stops a run, and so do the Stop button, the menu-bar Stop item, touching
+the keyboard, and `touch ~/.buddy/ABORT`.
 
 ## Commands
 
@@ -41,6 +52,7 @@ Press **⌥⌘Space** to open the HUD, **Esc** to dismiss it.
 | `npm run build` | Build the sidecar and the app bundle |
 | `npm run build:sidecar` | Build `buddyd` alone |
 | `npm run check:m1` | The M1 exit-criteria checks (13 of them) |
+| `npm run check:m2` | The M2 exit-criteria checks (57 of them) |
 | `npm run typecheck` | Both tsconfigs |
 | `npm run eval:goal` | The goal-inference eval (needs `ANTHROPIC_API_KEY`) |
 | `npm run dist` | Unsigned `.dmg` in `release/` |
@@ -61,6 +73,97 @@ survives rebuilds. This is PRD **R2**.
 
 After `npm run dist`, sign the bundle with `./scripts/sign-app.sh` — it signs the
 sidecar before the outer bundle, so the app's seal actually covers it.
+
+## What M2 built — the Operator
+
+```
+src/main/agent/
+  runner.ts       the computer-use loop: batching, fail-stop, pruning, caching
+  executor.ts     the ONE place a CGEvent is dispatched, and so the one place
+                  guardrails are enforced and coordinates are translated
+  guardrails.ts   classify() + the §7.1 policy matrix, pure and synchronous
+  killswitch.ts   all four switches, converging on one fire()
+  budget.ts       steps / wall clock / dollars, checked before every batch
+  tools.ts        computer_toolset_20260801 + describe_focused_window + finish
+  prompt.ts       the Operator system prompt
+  orchestrator.ts one run at a time, and one place that knows which
+sidecar/Sources/
+  Input.swift     CGEvent synthesis for all 17 toolset members
+  Target.swift    the guardrail's pre-dispatch AX read, and the takeover tap
+```
+
+### The parts worth knowing about
+
+**Coordinates are translated in exactly one function.** `screenPoint = origin +
+modelCoord / scale`. The scale factor arrives on the captured frame and is never
+recomputed; the display origin is `CGDisplayBounds`, which is already the
+coordinate space `CGEvent` uses. On a 16" internal display the scale is 1.0 and
+the translation is the identity — but a 4K display in "More Space" is 5.09 MP,
+over Opus 5's 3.75 MP ceiling, and then it is not. Every run step records the
+scale it used, so a misplaced click is diagnosable from the log.
+
+**The accessibility tree ships with every screenshot.** Not only when the model
+asks for it. The model reads `AXButton "Send" @1204,688` and clicks a named
+element at a known centre rather than estimating a pixel from an image. This is
+the single largest reliability win in the milestone.
+
+**Guardrails run in the executor, immediately before the `CGEvent` — never in
+the prompt.** The model is not asked to police itself. Signals in descending
+order of trust: the accessibility tree (a focused `AXSecureTextField` denies; a
+button titled `/^(send|post|publish|submit|buy|pay|place order|confirm|delete)/i`
+gates), then the app and domain allowlist, then keystroke-content heuristics
+(Luhn-valid card numbers, `sk-`/`ghp_` key shapes, seed phrases). The profile is
+fixed before the loop starts and a run cannot escalate it.
+
+**A deny parks the run.** It is deliberately *not* returned to the model as a
+tool error, because a tool error is an invitation to try something else — and
+"something else with the same effect" is the exact failure that rule exists to
+prevent. buddy stops, says what was blocked, and waits for a person.
+
+**Run screenshots outlive the daily purge**, because the Run Log is the trust
+surface and a log whose pictures vanish overnight cannot answer "what did buddy
+click". They live under `runs/<id>/`, not in the frame vault, and deleting a run
+deletes them.
+
+## What M2 verifies
+
+`npm run check:m2` runs 57 checks against the real modules. Two things are
+replaced, and only two: the **model**, by a scripted client that returns the
+exact content blocks a turn would; and on a machine without Accessibility, the
+**sidecar's input path**. Everything between those seams is shipping code.
+
+What that covers, concretely:
+
+- **All four kill switches fired mid-run**, with seventeen more turns of work
+  queued behind them, each shown to park the run with its log intact. A kill
+  switch that was never actually fired mid-run is not tested, so each one is.
+- **`BUDDY_MAGIC` actually discriminates.** buddy synthesizes an F19 keystroke
+  and the takeover switch does *not* trip; an identical F19 from another process
+  trips it. That is the whole basis of kill switch 3, and until it was tested
+  this way both halves passed vacuously because of the tap's arm delay.
+- **The guardrail matrix**, both profiles, including that a gated action
+  confirms in attended and parks in unattended, that a credential field denies
+  in both, and that a deny is never followed by an alternate route — the model
+  gets no further turn at all.
+- **Batch fail-stop**: order preserved, the exact halt text on every block after
+  the first failure, and all results in one user message.
+- **`toolset_name: "computer"` on every computer `tool_result`** and on no
+  custom-tool result. Omitting it is a hard 400 that reads as a model failure.
+- Budgets, screenshot pruning, the cache-breakpoint layout, and the coordinate
+  translation at both scale 1.0 and a 4K "More Space" scale.
+- Real `CGEvent` dispatch and the real AX hit test, **when Accessibility is
+  granted to `buddyd`**. Those checks report themselves as skipped when it is
+  not, rather than passing quietly or failing the suite.
+
+What it does **not** cover, and does not claim to: a live Opus 5 call. The loop
+is exercised through a scripted client, so `toolset_name`, the breakpoint
+layout, and the result shapes are asserted against the SDK's types and the
+documented contract rather than against the API. The first live run is still the
+first live run.
+
+Note that the checks synthesize a small amount of real input on the machine they
+run on — a pointer move that is put back, and F19, which has no default binding
+anywhere in macOS. Nothing is typed and nothing is clicked.
 
 ## What M1 built
 

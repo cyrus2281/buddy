@@ -12,6 +12,7 @@ import type {
   Permissions,
   SidecarStatus,
 } from '../../shared/types.js';
+import type { TargetInfo } from '../agent/guardrails.js';
 
 /// Spawns and supervises `buddyd`. Restarts it on crash with backoff, gives up
 /// after a burst of immediate failures rather than spinning, and surfaces the
@@ -48,8 +49,20 @@ export class Sidecar extends EventEmitter {
     // the same code signature — the arrangement R1 tests.
     const packaged = path.join(path.dirname(process.execPath), 'buddyd');
     if (fs.existsSync(packaged)) return packaged;
-    const dev = path.join(app.getAppPath(), 'sidecar', 'build', 'buddyd');
-    return dev;
+
+    // Development. `app.getAppPath()` is the project root under electron-vite
+    // dev but the entry's own directory when the built main is run directly, so
+    // walk up rather than assuming either. M2 cannot do anything at all without
+    // buddyd; guessing one path and failing was a launch-mode trap.
+    let dir = app.getAppPath();
+    for (let i = 0; i < 5; i++) {
+      const candidate = path.join(dir, 'sidecar', 'build', 'buddyd');
+      if (fs.existsSync(candidate)) return candidate;
+      const up = path.dirname(dir);
+      if (up === dir) break;
+      dir = up;
+    }
+    return path.join(app.getAppPath(), 'sidecar', 'build', 'buddyd');
   }
 
   async start(): Promise<void> {
@@ -72,6 +85,10 @@ export class Sidecar extends EventEmitter {
     this.proc = spawn(bin, [], { stdio: ['pipe', 'pipe', 'pipe'] }) as ChildProcessWithoutNullStreams;
     this.startedAt = Date.now();
     this.rpc = new RpcClient(this.proc);
+
+    this.rpc.onNotification('human_input', (p) => {
+      for (const fn of this.humanInputHandlers) fn(p);
+    });
 
     this.rpc.onNotification('ready', (p) => {
       this.version = p?.version ?? null;
@@ -218,7 +235,27 @@ export class Sidecar extends EventEmitter {
   displays = () => this.require().call<{ displays: DisplayInfo[] }>('displays', {}, 10_000);
   axTree = (params: { pid?: number; depth?: number; maxNodes?: number } = {}) =>
     this.require().call('ax_tree', params, 10_000);
-  input = (action: Record<string, unknown>) => this.require().call('input', action, 15_000);
+  input = (action: Record<string, unknown>) => this.require().call('input', action, 45_000);
+
+  /** The one call the guardrail makes immediately before every dispatch: the
+   *  frontmost app, the focused element, the page URL, and the element under
+   *  the pointer, in one round trip (PRD §7.2). */
+  targetInfo = (point?: { x: number; y: number }) =>
+    this.require().call<TargetInfo>('target_info', point ? { x: point.x, y: point.y } : {}, 8_000);
+
+  /** §7.3 kill switch 3. buddyd runs a listen-only event tap and filters out
+   *  buddy's own events by their `BUDDY_MAGIC` tag, so this only fires on real
+   *  human input. */
+  watchInput = () => this.require().call<{ watching: boolean }>('watch_input', {}, 5_000);
+  unwatchInput = () => this.require().call<{ watching: boolean }>('unwatch_input', {}, 5_000);
+
+  /** Survives a sidecar restart: the handler is registered against the
+   *  supervisor, and re-attached to each new RpcClient in `start()`. */
+  onHumanInput(fn: (p: { kind: string; t: number }) => void) {
+    this.humanInputHandlers.add(fn);
+    return () => this.humanInputHandlers.delete(fn);
+  }
+  private humanInputHandlers = new Set<(p: { kind: string; t: number }) => void>();
   capture = (params: {
     path: string;
     target?: 'display' | 'window' | 'region';
