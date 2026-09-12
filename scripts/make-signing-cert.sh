@@ -46,15 +46,24 @@ EOF
 openssl req -x509 -newkey rsa:2048 -sha256 -days 3650 -nodes \
   -keyout "$WORK/key.pem" -out "$WORK/cert.pem" -config "$WORK/ext.cnf" 2>/dev/null
 
+# The PKCS#12 needs a non-empty password. macOS's importer fails MAC
+# verification on an empty-password bundle ("wrong password?") no matter which
+# cipher produced it, so the passphrase is generated here, used twice, and
+# thrown away with $WORK — it protects a file that exists for one second.
+P12PASS="$(openssl rand -hex 16)"
+
+# -legacy asks OpenSSL 3 for the RC2/3DES encoding the Security framework can
+# read; without it a modern AES-256 bundle imports as an opaque blob. Older
+# OpenSSL has no such flag and already defaults to it, hence the fallback.
 openssl pkcs12 -export -legacy \
   -inkey "$WORK/key.pem" -in "$WORK/cert.pem" \
-  -out "$WORK/identity.p12" -passout pass: -name "$CN" 2>/dev/null \
+  -out "$WORK/identity.p12" -passout "pass:$P12PASS" -name "$CN" 2>/dev/null \
   || openssl pkcs12 -export \
        -inkey "$WORK/key.pem" -in "$WORK/cert.pem" \
-       -out "$WORK/identity.p12" -passout pass: -name "$CN"
+       -out "$WORK/identity.p12" -passout "pass:$P12PASS" -name "$CN"
 
 # -T scopes the private key's access to codesign rather than every app.
-security import "$WORK/identity.p12" -k "$KEYCHAIN" -P "" \
+security import "$WORK/identity.p12" -k "$KEYCHAIN" -P "$P12PASS" \
   -T /usr/bin/codesign -T /usr/bin/security
 
 # Trust it for code signing in the *user* domain — no admin password, and it
