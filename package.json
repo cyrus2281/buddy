@@ -14,7 +14,10 @@
     "postinstall": "electron-rebuild -f -w better-sqlite3",
     "rebuild": "electron-rebuild -f -w better-sqlite3",
     "check:m1": "electron-vite build && electron out/main/m1-checks.js",
-    "check:m2": "electron-vite build && electron out/main/m2-checks.js"
+    "check:m2": "electron-vite build && electron out/main/m2-checks.js",
+    "check:m3": "electron-vite build && electron out/main/m3-checks.js",
+    "eval:record": "electron-vite build && electron out/main/record.js",
+    "eval:goal:shots": "tsx evals/goal-inference/run.ts --fixture .shot"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.125.0",
@@ -81,6 +84,12 @@
     },
     "dmg": {
       "sign": false
-    }
+    },
+    "extraResources": [
+      {
+        "from": "prompts/goal-inference.system.md",
+        "to": "prompts/goal-inference.system.md"
+      }
+    ]
   }
 }

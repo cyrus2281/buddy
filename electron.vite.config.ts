@@ -16,6 +16,10 @@ export default defineConfig({
           // against the real Electron ABI rather than a reimplementation.
           'm1-checks': path.resolve('src/main/m1-checks.ts'),
           'm2-checks': path.resolve('src/main/m2-checks.ts'),
+          'm3-checks': path.resolve('src/main/m3-checks.ts'),
+          // The fixture recorder needs a real Chromium renderer to screenshot,
+          // so it is an Electron entry rather than a tsx script.
+          record: path.resolve('evals/goal-inference/record.ts'),
         },
       },
     },

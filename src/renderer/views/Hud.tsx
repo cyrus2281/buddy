@@ -3,7 +3,21 @@ import { AnimatePresence, motion } from 'framer-motion';
 import { api, useBuddy } from '../useBuddy.js';
 import { spring, useMotionSafe } from '../components/primitives.js';
 import { BudgetMeters, StepLine, describeStep } from '../components/run.js';
-import type { PendingGate, RunProfile, RunView } from '../../shared/types.js';
+import {
+  Alternatives,
+  AlreadyDone,
+  Evidence,
+  GoalLine,
+  InjectionNotice,
+  RiskFlags,
+} from '../components/inference.js';
+import type {
+  Allowlist,
+  InferenceState,
+  PendingGate,
+  RunProfile,
+  RunView,
+} from '../../shared/types.js';
 
 /// The HUD (PRD §8.1) — the one screen that matters.
 ///
@@ -18,18 +32,32 @@ import type { PendingGate, RunProfile, RunView } from '../../shared/types.js';
 ///               it targets. Approve / Deny / Stop run.
 ///   **ENDED**   what it did, or why it stopped, with the log one click away.
 ///
-/// M3 replaces the typed goal with inference; the confirm panel is already the
-/// shape that will show it, which is why the profile and the allowlist are
-/// confirmed in the same keystroke as the goal.
+/// **M3 made the typed goal optional.** The ARMED panel now opens with a goal
+/// already in it — provisional within ~200 ms from the newest open task note,
+/// then replaced in place by the model's reading with evidence, risk flags, a
+/// proposed profile and the app allowlist it seeds. One Enter runs it, which is
+/// what §6.1 means by confirming the goal and the app set in the same keystroke.
+///
+/// Typing still works and always wins. It is the override for the case the
+/// reading gets wrong, the case where there is no key, and the case where the
+/// user simply wants something else — and it is one keystroke away rather than
+/// behind a mode.
 
-type Phase = 'goal' | 'confirm' | 'acting' | 'ended';
+type Phase = 'armed' | 'typing' | 'acting' | 'ended';
 
+const PROFILE_COPY: Record<RunProfile, string> = {
+  attended: 'You are watching. Anything that sends, deletes, or installs asks you first.',
+  unattended: 'Nobody is watching. Those are refused outright and the run stops.',
+  leashless: 'Nobody is watching and nothing is refused. Everything is pre-approved.',
+};
 export function Hud() {
-  const { state, permissions, snapshot, run, gate, hotkeyIssues } = useBuddy();
+  const { state, permissions, snapshot, run, gate, hotkeyIssues, inference, settings } = useBuddy();
   const [visible, setVisible] = useState(true);
-  const [goal, setGoal] = useState('');
-  const [profile, setProfile] = useState<RunProfile>('attended');
-  const [phase, setPhase] = useState<Phase>('goal');
+  const [phase, setPhase] = useState<Phase>('armed');
+  /** Null until the user types. Non-null means the typed goal wins over the
+   *  inferred one, for the rest of this activation. */
+  const [typed, setTyped] = useState<string | null>(null);
+  const [profile, setProfile] = useState<RunProfile | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [collapsed, setCollapsed] = useState(false);
   const safe = useMotionSafe();
@@ -38,6 +66,31 @@ export function Hud() {
 
   const running = run?.status === 'running' || run?.status === 'gated';
   const ended = !!run && ['done', 'waiting', 'needs_human', 'cancelled'].includes(run.status);
+  const reading = inference?.reading ?? null;
+
+  /** The goal that will actually run: what the user typed, else what buddy
+   *  read, else the provisional guess. One expression, so there is never a
+   *  question of which one the Enter key is about to use. */
+  const goal = (typed ?? inference?.goal ?? '').trim();
+
+  /** §6.1 step 6. Below 0.5 buddy asks instead of acting — unless the user has
+   *  typed, in which case there is nothing left to be unsure about. */
+  const mustAsk = !typed && !!reading && reading.confidence < 0.5;
+
+  /** §6.1: `target_apps` seeds the allowlist the user confirms in the same
+   *  keystroke as the goal. Before the reading lands there is nothing to seed
+   *  it with, so the configured default stands and the panel says which. */
+  const allowlist: Allowlist = reading?.target_apps.length
+    ? { apps: reading.target_apps, domains: snapshot?.defaultAllowlist.domains ?? [] }
+    : (snapshot?.defaultAllowlist ?? { apps: [], domains: [] });
+  const allowlistSeeded = !!reading?.target_apps.length;
+
+  const effectiveProfile: RunProfile = profile ?? reading?.proposed_profile ?? 'attended';
+
+  /** §7.1: leashless is not offered until it is turned on in Settings. */
+  const profiles: RunProfile[] = settings?.leashlessEnabled
+    ? ['attended', 'unattended', 'leashless']
+    : ['attended', 'unattended'];
 
   // The run is the source of truth for the phase; the local one only covers the
   // stretch before a run exists.
@@ -51,9 +104,10 @@ export function Hud() {
       setVisible(true);
       setCollapsed(false);
       if (!running && !ended) {
-        setPhase('goal');
-        void api.armHud();
-        setTimeout(() => inputRef.current?.focus(), 60);
+        setPhase('armed');
+        setTyped(null);
+        setProfile(null);
+        setError(null);
       }
     });
     const offHide = api.onHudHidden(() => setVisible(false));
@@ -63,45 +117,50 @@ export function Hud() {
     };
   }, [running, ended]);
 
-  useEffect(() => {
-    setTimeout(() => inputRef.current?.focus(), 60);
-  }, []);
-
-  // §8.1: collapse to a pill three seconds in, so the HUD stops covering the
-  // work it is doing. Hover or the hotkey brings it back.
-  useEffect(() => {
-    if (phase !== 'acting' || gate) {
-      setCollapsed(false);
-      return;
-    }
-    const t = setTimeout(() => setCollapsed(true), 3000);
-    return () => clearTimeout(t);
-  }, [phase, gate]);
-
   const dismiss = useCallback(() => {
     setVisible(false);
-    setGoal('');
-    setPhase('goal');
+    setTyped(null);
+    setProfile(null);
+    setPhase('armed');
     setError(null);
     void api.cancelArm();
     void api.hideHud();
   }, []);
 
-  const start = useCallback(async () => {
-    setError(null);
-    setPhase('acting');
-    try {
-      await api.startRun({
-        goal,
-        profile,
-        allowlist: snapshot?.defaultAllowlist ?? { apps: [], domains: [] },
-        budgets: snapshot?.defaultBudgets,
-      });
-    } catch (e) {
-      setError((e as Error).message.replace(/^Error invoking remote method '[^']+': (Error: )?/, ''));
-      setPhase('confirm');
-    }
-  }, [goal, profile, snapshot]);
+  const start = useCallback(
+    async (withGoal: string, withProfile: RunProfile) => {
+      setError(null);
+      setPhase('acting');
+      try {
+        await api.startRun({
+          goal: withGoal,
+          profile: withProfile,
+          allowlist,
+          budgets: snapshot?.defaultBudgets,
+        });
+      } catch (e) {
+        setError((e as Error).message.replace(/^Error invoking remote method '[^']+': (Error: )?/, ''));
+        setPhase('armed');
+      }
+    },
+    [allowlist, snapshot],
+  );
+
+  /** Start typing to take over the goal. Deliberately not a button: the PRD's
+   *  interaction is "Enter to run, type to amend, Esc to cancel", and putting
+   *  the amend path behind a click would make the fast case slower. */
+  const beginTyping = useCallback(
+    (seed: string) => {
+      setTyped(seed);
+      setPhase('typing');
+      setTimeout(() => {
+        inputRef.current?.focus();
+        const el = inputRef.current;
+        if (el) el.selectionStart = el.selectionEnd = el.value.length;
+      }, 40);
+    },
+    [],
+  );
 
   // Esc is the universal out. During a run it stops rather than hides: hiding
   // the window would leave the agent driving with nothing on screen.
@@ -117,9 +176,9 @@ export function Hud() {
         void api.stopRun();
         return;
       }
-      if (phase === 'confirm') {
-        setPhase('goal');
-        setTimeout(() => inputRef.current?.focus(), 40);
+      if (phase === 'typing') {
+        setTyped(null);
+        setPhase('armed');
         return;
       }
       dismiss();
@@ -127,6 +186,56 @@ export function Hud() {
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
   }, [gate, running, phase, dismiss]);
+
+  // The ARMED keyboard surface: Enter runs, a digit picks an alternative, and
+  // any other printable key starts amending the goal rather than being dropped.
+  useEffect(() => {
+    if (phase !== 'armed' || gate) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.metaKey || e.ctrlKey || e.altKey) return;
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        if (mustAsk || !goal) {
+          beginTyping(goal);
+          return;
+        }
+        void start(goal, effectiveProfile);
+        return;
+      }
+      if (mustAsk && reading && /^[1-3]$/.test(e.key)) {
+        const options = [reading.goal, ...reading.alternatives.map((a) => a.goal)];
+        const picked = options[Number(e.key) - 1];
+        if (picked) {
+          e.preventDefault();
+          setTyped(picked);
+        }
+        return;
+      }
+      if (e.key === 'Tab') {
+        e.preventDefault();
+        const i = profiles.indexOf(effectiveProfile);
+        setProfile(profiles[(i + 1) % profiles.length]!);
+        return;
+      }
+      if (e.key.length === 1) {
+        e.preventDefault();
+        beginTyping(e.key);
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [phase, gate, goal, mustAsk, reading, effectiveProfile, profiles, start, beginTyping]);
+
+  // §8.1: collapse to a pill three seconds in, so the HUD stops covering the
+  // work it is doing. Hover or the hotkey brings it back.
+  useEffect(() => {
+    if (phase !== 'acting' || gate) {
+      setCollapsed(false);
+      return;
+    }
+    const t = setTimeout(() => setCollapsed(true), 3000);
+    return () => clearTimeout(t);
+  }, [phase, gate]);
 
   // The window is sized to its content, so a pill is actually a pill.
   useLayoutEffect(() => {
@@ -137,7 +246,7 @@ export function Hud() {
     const ro = new ResizeObserver(report);
     ro.observe(el);
     return () => ro.disconnect();
-  }, [phase, collapsed, gate, run?.steps.length, error]);
+  }, [phase, collapsed, gate, run?.steps.length, error, inference?.phase]);
 
   const blocked = permissions && (!permissions.screenRecording || !permissions.accessibility);
 
@@ -166,34 +275,40 @@ export function Hud() {
                       screen={!!permissions?.screenRecording}
                       accessibility={!!permissions?.accessibility}
                     />
-                  ) : phase === 'goal' ? (
-                    <GoalInput
-                      ref={inputRef}
-                      goal={goal}
-                      setGoal={setGoal}
-                      onSubmit={() => goal.trim() && setPhase('confirm')}
-                    />
-                  ) : phase === 'confirm' ? (
-                    <Confirm
-                      goal={goal}
-                      profile={profile}
-                      setProfile={setProfile}
-                      apps={snapshot?.defaultAllowlist.apps ?? []}
-                      budgets={snapshot?.defaultBudgets}
-                      abortHotkey={
-                        hotkeyIssues.find((h) => h.label === 'Abort run')?.accelerator ?? null
-                      }
-                      error={error}
-                      onBack={() => {
-                        setPhase('goal');
-                        setTimeout(() => inputRef.current?.focus(), 40);
-                      }}
-                      onRun={() => void start()}
-                    />
                   ) : phase === 'acting' ? (
                     <Acting run={run} />
-                  ) : (
+                  ) : phase === 'ended' ? (
                     <Ended run={run} onClose={dismiss} />
+                  ) : phase === 'typing' ? (
+                    <TypedGoal
+                      ref={inputRef}
+                      goal={typed ?? ''}
+                      setGoal={setTyped}
+                      profile={effectiveProfile}
+                      onBack={() => {
+                        setTyped(null);
+                        setPhase('armed');
+                      }}
+                      onRun={() => (typed ?? '').trim() && void start((typed ?? '').trim(), effectiveProfile)}
+                    />
+                  ) : (
+                    <Armed
+                      inference={inference}
+                      goal={goal}
+                      mustAsk={mustAsk}
+                      profile={effectiveProfile}
+                      profileIsMine={profile !== null}
+                      setProfile={setProfile}
+                      allowlist={allowlist}
+                      allowlistSeeded={allowlistSeeded}
+                      profiles={profiles}
+                      budgets={snapshot?.defaultBudgets}
+                      abortHotkey={hotkeyIssues.find((h) => h.label === 'Abort run')?.accelerator ?? null}
+                      error={error}
+                      onPick={(g) => setTyped(g)}
+                      onAmend={() => beginTyping(goal)}
+                      onRun={() => goal && void start(goal, effectiveProfile)}
+                    />
                   )}
                 </div>
               </>
@@ -249,117 +364,130 @@ function Pill({ run }: { run: RunView }) {
     </div>
   );
 }
-
 // ── ARMED ────────────────────────────────────────────────────────────────────
 
-const GoalInput = React.forwardRef<
-  HTMLTextAreaElement,
-  { goal: string; setGoal: (s: string) => void; onSubmit: () => void }
->(function GoalInput({ goal, setGoal, onSubmit }, ref) {
-  return (
-    <div className="no-drag flex flex-col gap-3">
-      <p className="text-[10px] uppercase tracking-[0.1em] text-fog-500">What should buddy finish?</p>
-      <textarea
-        ref={ref}
-        value={goal}
-        onChange={(e) => setGoal(e.target.value)}
-        onKeyDown={(e) => {
-          if (e.key === 'Enter' && !e.shiftKey) {
-            e.preventDefault();
-            onSubmit();
-          }
-        }}
-        rows={3}
-        placeholder="Open the Q3 Migration note and paste the connector-rename issue under Blockers"
-        className="w-full resize-none rounded-xl border border-ink-700 bg-ink-950/70 px-3.5 py-3
-                   text-[14px] leading-relaxed text-fog-100 outline-none
-                   placeholder:text-fog-500/60 focus:border-ember-500/70"
-      />
-      <div className="flex items-center justify-between">
-        <p className="text-[11px] text-fog-500">
-          M3 infers this from what you were doing. Until then, type it.
-        </p>
-        <button
-          onClick={onSubmit}
-          disabled={!goal.trim()}
-          className="rounded-lg bg-ember-500 px-3 py-1.5 text-[12px] font-medium text-ink-950
-                     transition-colors hover:bg-ember-400 disabled:opacity-30"
-        >
-          Continue ⏎
-        </button>
-      </div>
-    </div>
-  );
-});
-
-function Confirm({
+/**
+ * The panel the hotkey opens onto (PRD §8.1).
+ *
+ * It is the same panel from the first 200 ms to the end: the goal line changes
+ * from the local guess to the model's reading in place, and the evidence, risk
+ * flags, and allowlist fill in beneath it. Nothing appears above the goal after
+ * the first paint, because a layout that pushes the headline down at second
+ * nine reads as a different screen rather than the same one, updated.
+ */
+function Armed({
+  inference,
   goal,
+  mustAsk,
   profile,
+  profileIsMine,
   setProfile,
-  apps,
+  allowlist,
+  allowlistSeeded,
+  profiles,
   budgets,
   abortHotkey,
   error,
-  onBack,
+  onPick,
+  onAmend,
   onRun,
 }: {
+  inference: InferenceState | null;
   goal: string;
+  mustAsk: boolean;
   profile: RunProfile;
+  /** True once the user has overridden the proposal, so the panel can stop
+   *  claiming the profile is buddy's suggestion. */
+  profileIsMine: boolean;
   setProfile: (p: RunProfile) => void;
-  apps: string[];
+  allowlist: Allowlist;
+  allowlistSeeded: boolean;
+  /** `leashless` appears only when it has been turned on in Settings (§7.1). */
+  profiles: RunProfile[];
   budgets?: { maxSteps: number; maxWallClockMs: number; maxCostUsd: number };
-  /** The accelerator that would NOT register, or null when it did. */
   abortHotkey: string | null;
   error: string | null;
-  onBack: () => void;
+  onPick: (goal: string) => void;
+  onAmend: () => void;
   onRun: () => void;
 }) {
-  // Enter runs. Deliberately explicit — §6.1 rules out an auto-proceed
-  // countdown, because a countdown is a confirmation nobody reads.
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Enter' && !e.shiftKey) {
-        e.preventDefault();
-        onRun();
-      }
-    };
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, [onRun]);
+  const reading = inference?.reading ?? null;
+  const state: InferenceState = inference ?? {
+    phase: 'idle',
+    goal: null,
+    source: 'none',
+    reading: null,
+    error: null,
+    ms: null,
+    costUsd: null,
+    requestId: 0,
+  };
+  const nothingToGoOn = state.phase !== 'provisional' && !goal;
 
   return (
     <div className="no-drag flex flex-col gap-4">
-      <div>
-        <p className="text-[10px] uppercase tracking-[0.1em] text-fog-500">Goal</p>
-        <h1 className="mt-1.5 text-[17px] leading-snug font-light tracking-tight text-fog-100">{goal}</h1>
-      </div>
+      <GoalLine state={state} />
+
+      {reading?.injection_notice && <InjectionNotice quote={reading.injection_notice} />}
+
+      {mustAsk && reading ? (
+        <Alternatives reading={reading} onPick={onPick} />
+      ) : (
+        <>
+          {reading && <Evidence items={reading.evidence} />}
+          {reading && <AlreadyDone items={reading.already_done} />}
+        </>
+      )}
+
+      {nothingToGoOn && (
+        <p className="text-[11px] leading-relaxed text-fog-500">
+          {state.phase === 'error'
+            ? state.error
+            : 'Nothing recent enough to pick up. Type what you want finished.'}
+        </p>
+      )}
 
       <div className="flex gap-2">
-        {(['attended', 'unattended'] as const).map((p) => (
+        {profiles.map((p) => (
           <button
             key={p}
             onClick={() => setProfile(p)}
             className={`flex-1 rounded-xl border px-3 py-2.5 text-left transition-colors ${
               profile === p
-                ? 'border-ember-500/60 bg-ember-500/10'
+                ? p === 'leashless'
+                  ? 'border-rust-400/70 bg-rust-400/10'
+                  : 'border-ember-500/60 bg-ember-500/10'
                 : 'border-ink-700 bg-ink-850/50 hover:border-ink-600'
             }`}
           >
-            <div className="text-[12px] font-medium text-fog-100">{p}</div>
+            <div className="flex items-baseline gap-1.5">
+              <span
+                className={`text-[12px] font-medium ${p === 'leashless' ? 'text-rust-400' : 'text-fog-100'}`}
+              >
+                {p}
+              </span>
+              {!profileIsMine && reading?.proposed_profile === p && (
+                <span className="font-mono text-[9px] uppercase tracking-wider text-fog-500">
+                  buddy’s pick
+                </span>
+              )}
+            </div>
             <div className="mt-0.5 text-[11px] leading-snug text-fog-500">
-              {p === 'attended'
-                ? 'You are watching. Anything that sends, deletes, or installs asks you first.'
-                : 'Nobody is watching. Those are refused outright and the run stops.'}
+              {PROFILE_COPY[p]}
             </div>
           </button>
         ))}
       </div>
 
+      {reading && <RiskFlags flags={reading.risk_flags} />}
+
       <div className="rounded-xl border border-ink-700/60 bg-ink-950/40 px-3.5 py-3">
         <div className="flex items-baseline justify-between gap-3">
-          <span className="text-[10px] uppercase tracking-[0.09em] text-fog-500">Allowlist</span>
+          <span className="shrink-0 text-[10px] uppercase tracking-[0.09em] text-fog-500">
+            {allowlistSeeded ? 'Apps buddy may touch' : 'Allowlist (default)'}
+          </span>
           <span className="min-w-0 flex-1 truncate text-right font-mono text-[10px] text-fog-300">
-            {apps.length ? apps.join(' · ') : 'none'}
+            {allowlist.apps.length ? allowlist.apps.join(' · ') : 'none'}
           </span>
         </div>
         {budgets && (
@@ -373,21 +501,31 @@ function Confirm({
         )}
       </div>
 
-      <p className="text-[11px] leading-relaxed text-fog-500">
-        {profile === 'attended'
-          ? 'Attended mode assumes you are watching. The guardrails are defence in depth, not a proof.'
-          : 'buddy will not send, post, delete, install, or leave the allowlist. It stops and asks instead.'}
-      </p>
+      {profile === 'leashless' ? (
+        <p className="rounded-lg border border-rust-400/50 bg-rust-400/10 px-3 py-2.5 text-[11px] leading-relaxed text-rust-400">
+          <span className="font-medium">Nothing will ask you.</span> buddy can send messages and
+          email, delete files, install software, complete a purchase, and type passwords or keys,
+          with nobody watching and no confirmation. The allowlist does not apply. Stopping it is
+          still yours — the hotkey, Stop, <span className="font-mono">~/.buddy/ABORT</span> — and
+          the step, time, and cost budgets still end the run.
+        </p>
+      ) : (
+        <p className="text-[11px] leading-relaxed text-fog-500">
+          {profile === 'attended'
+            ? 'Attended mode assumes you are watching. The guardrails are defence in depth, not a proof.'
+            : 'buddy will not send, post, delete, install, or leave the allowlist. It stops and asks instead.'}
+        </p>
+      )}
 
       {/* A kill switch that did not register must be said out loud, at the
           moment the user is about to hand over the keyboard — not left in a
-          log nobody opens. The other three still work, and it says so. */}
+          log nobody opens. The other two still work, and it says so. */}
       {abortHotkey && (
         <p className="rounded-lg border border-ember-500/40 bg-ember-500/10 px-3 py-2 text-[11px] leading-relaxed text-ember-300">
           The abort hotkey <span className="font-mono">{abortHotkey}</span> could not be registered —
-          another app may own it, or it is not a combination Electron accepts. The Stop button,{' '}
-          <span className="font-mono">~/.buddy/ABORT</span>, and taking over the keyboard all still
-          stop the run. Change it in Settings.
+          another app may own it, or it is not a combination Electron accepts. The Stop button and{' '}
+          <span className="font-mono">~/.buddy/ABORT</span> both still stop the run. Change it in
+          Settings.
         </p>
       )}
 
@@ -397,21 +535,80 @@ function Confirm({
         </p>
       )}
 
-      <div className="flex items-center justify-between">
-        <button onClick={onBack} className="text-[11px] text-fog-500 transition-colors hover:text-fog-100">
-          ← Edit the goal
+      <div className="flex items-center justify-between gap-3">
+        <button onClick={onAmend} className="text-[11px] text-fog-500 transition-colors hover:text-fog-100">
+          Type to change it
         </button>
-        <button
-          onClick={onRun}
-          className="rounded-lg bg-ember-500 px-3.5 py-1.5 text-[12px] font-medium text-ink-950
-                     transition-colors hover:bg-ember-400"
-        >
-          Run it ⏎
-        </button>
+        <div className="flex items-center gap-2">
+          {state.phase === 'ready' && state.ms != null && (
+            <span className="font-mono text-[10px] text-fog-500/70">
+              read in {(state.ms / 1000).toFixed(1)}s
+            </span>
+          )}
+          <button
+            onClick={mustAsk || !goal ? onAmend : onRun}
+            disabled={!goal && !mustAsk}
+            className="rounded-lg bg-ember-500 px-3.5 py-1.5 text-[12px] font-medium text-ink-950
+                       transition-colors hover:bg-ember-400 disabled:opacity-30"
+          >
+            {mustAsk ? 'Pick one ⏎' : 'Run it ⏎'}
+          </button>
+        </div>
       </div>
     </div>
   );
 }
+
+/** The override (PRD §6.1 step 5). Same panel, one field, and the profile and
+ *  allowlist the ARMED panel already settled. */
+const TypedGoal = React.forwardRef<
+  HTMLTextAreaElement,
+  {
+    goal: string;
+    setGoal: (s: string) => void;
+    profile: RunProfile;
+    onBack: () => void;
+    onRun: () => void;
+  }
+>(function TypedGoal({ goal, setGoal, profile, onBack, onRun }, ref) {
+  return (
+    <div className="no-drag flex flex-col gap-3">
+      <p className="text-[10px] uppercase tracking-[0.1em] text-fog-500">What should buddy finish?</p>
+      <textarea
+        ref={ref}
+        value={goal}
+        onChange={(e) => setGoal(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter' && !e.shiftKey) {
+            e.preventDefault();
+            onRun();
+          }
+        }}
+        rows={3}
+        placeholder="Open the Q3 Migration note and paste the connector-rename issue under Blockers"
+        className="w-full resize-none rounded-xl border border-ink-700 bg-ink-950/70 px-3.5 py-3
+                   text-[14px] leading-relaxed text-fog-100 outline-none
+                   placeholder:text-fog-500/60 focus:border-ember-500/70"
+      />
+      <div className="flex items-center justify-between">
+        <button onClick={onBack} className="text-[11px] text-fog-500 transition-colors hover:text-fog-100">
+          ← Back to what buddy read
+        </button>
+        <div className="flex items-center gap-2.5">
+          <span className="font-mono text-[10px] text-fog-500">{profile}</span>
+          <button
+            onClick={onRun}
+            disabled={!goal.trim()}
+            className="rounded-lg bg-ember-500 px-3 py-1.5 text-[12px] font-medium text-ink-950
+                       transition-colors hover:bg-ember-400 disabled:opacity-30"
+          >
+            Run it ⏎
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+});
 
 // ── ACTING ───────────────────────────────────────────────────────────────────
 
@@ -436,8 +633,16 @@ function Acting({ run }: { run: RunView | null }) {
 
       <BudgetMeters run={run} />
 
+      {run.sessionGrants.length > 0 && (
+        <p className="rounded-lg border border-ember-500/30 bg-ember-500/5 px-2.5 py-1.5 text-[10px] leading-relaxed text-ember-300">
+          Not asking again about: {run.sessionGrants.join(' · ')} — until this run ends.
+        </p>
+      )}
+
       <div className="flex items-center justify-between">
-        <span className="font-mono text-[10px] text-fog-500">
+        <span
+          className={`font-mono text-[10px] ${run.profile === 'leashless' ? 'text-rust-400' : 'text-fog-500'}`}
+        >
           {run.profile} · cache read {run.cacheReadTokens.toLocaleString()} tok
         </span>
         <button
@@ -471,13 +676,26 @@ function GateOverlay({ gate }: { gate: PendingGate }) {
           {gate.action.replace(/_/g, ' ')} → {gate.verdict.target} · {gate.verdict.class} · via{' '}
           {gate.verdict.signal}
         </p>
-        <div className="mt-4 flex items-center gap-2">
+        <div className="mt-4 flex flex-wrap items-center gap-2">
           <button
             onClick={() => void api.resolveGate('approve')}
             className="rounded-lg bg-ember-500 px-3.5 py-1.5 text-[12px] font-medium text-ink-950
                        transition-colors hover:bg-ember-400"
           >
             Approve
+          </button>
+          {/* The blanket grant. Deliberately not offered on the first ask: a
+              task that needs one confirmation should get one confirmation, and
+              putting "stop asking" in front of someone before they know how
+              often they will be asked is how people grant more than they meant
+              to. The second ask is when it becomes the useful answer. */}
+          <button
+            onClick={() => void api.resolveGate('approve-session')}
+            className="rounded-lg border border-ember-500/50 bg-ember-500/10 px-3.5 py-1.5
+                       text-[12px] text-ember-300 transition-colors hover:bg-ember-500/20"
+            title={`buddy will not ask again about ${gate.sessionScope} until this run ends.`}
+          >
+            Allow {gate.sessionScope} for this run
           </button>
           <button
             onClick={() => void api.resolveGate('deny')}
@@ -495,6 +713,8 @@ function GateOverlay({ gate }: { gate: PendingGate }) {
         </div>
         <p className="mt-3 text-[10px] leading-relaxed text-fog-500">
           Denying stops the run here. buddy does not look for another way to do the same thing.
+          Allowing for the run covers {gate.sessionScope} and nothing else — it ends when the run
+          does, and every action it covers is still in the log.
         </p>
       </div>
     </motion.div>

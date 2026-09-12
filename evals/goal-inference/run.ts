@@ -1,7 +1,9 @@
 /**
  * buddy · goal-inference eval
  *
- *   npm run eval:goal                      # all fixtures, effort=high
+ *   npm run eval:goal                      # the text fixtures, effort=high
+ *   npm run eval:goal -- --shots           # the recorded-screenshot fixtures
+ *   npm run eval:goal -- --both            # both, side by side
  *   npm run eval:goal -- --fixture 04      # one fixture
  *   npm run eval:goal -- --effort medium   # sweep effort
  *   npm run eval:goal -- --runs 3          # 3x each, to see variance
@@ -122,12 +124,26 @@ async function main() {
 
   const system = readFileSync(join(ROOT, "prompts", "goal-inference.system.md"), "utf8");
   const dir = join(HERE, "fixtures");
-  const files = readdirSync(dir)
-    .filter((f) => f.endsWith(".json"))
+  const all = readdirSync(dir).filter((f) => f.endsWith(".json"));
+
+  // Two modalities of the same five scenarios. `.shot.json` carries real
+  // screenshots where the text fixture carries a prose `description`, and they
+  // are otherwise identical — so running both is the before/after that says
+  // whether visual grounding costs anything. Default is text, because it is the
+  // cheap one and the one that runs after every prompt edit.
+  const wantShots = has("shots") || has("both");
+  const wantText = !has("shots") || has("both");
+  const files = all
+    .filter((f) => (f.endsWith(".shot.json") ? wantShots : wantText))
     .filter((f) => !only || f.startsWith(only) || f.includes(only));
 
   if (!files.length) {
-    console.error(`No fixtures matched "${only}".`);
+    console.error(
+      `No fixtures matched${only ? ` "${only}"` : ""}.` +
+        (wantShots && !all.some((f) => f.endsWith(".shot.json"))
+          ? " Recorded fixtures are build output — run `npm run eval:record` first."
+          : ""),
+    );
     process.exit(1);
   }
 
@@ -138,14 +154,21 @@ async function main() {
   let total = 0;
   let warnCount = 0;
   const results: unknown[] = [];
+  /** Per-modality tallies, so `--both` prints the comparison itself. */
+  const byMode: Record<string, { pass: number; total: number; warns: number; cost: number; ms: number[] }> = {
+    text: { pass: 0, total: 0, warns: 0, cost: 0, ms: [] },
+    shot: { pass: 0, total: 0, warns: 0, cost: 0, ms: [] },
+  };
 
   console.log(`\nmodel=${model}  effort=${effort}  runs=${runs}  fixtures=${files.length}\n`);
 
   for (const file of files) {
     const fx: Fixture = JSON.parse(readFileSync(join(dir, file), "utf8"));
+    const mode = file.endsWith(".shot.json") ? "shot" : "text";
 
     for (let r = 0; r < runs; r++) {
       total++;
+      byMode[mode]!.total++;
       const label = runs > 1 ? `${fx.name} #${r + 1}` : fx.name;
       let out: GoalInference;
       const t0 = Date.now();
@@ -164,7 +187,10 @@ async function main() {
         });
         ms = Date.now() - t0;
         latencies.push(ms);
-        cost += res.usage.input_tokens * PRICE_IN + res.usage.output_tokens * PRICE_OUT;
+        byMode[mode]!.ms.push(ms);
+        const callCost = res.usage.input_tokens * PRICE_IN + res.usage.output_tokens * PRICE_OUT;
+        cost += callCost;
+        byMode[mode]!.cost += callCost;
         if (!res.parsed_output) throw new Error("structured output failed to parse");
         out = res.parsed_output as GoalInference;
       } catch (err) {
@@ -175,8 +201,12 @@ async function main() {
 
       const fails = check(out, fx.expect);
       const warns = warn(out, fx.expect);
-      if (!fails.length) pass++;
+      if (!fails.length) {
+        pass++;
+        byMode[mode]!.pass++;
+      }
       warnCount += warns.length;
+      byMode[mode]!.warns += warns.length;
 
       console.log(`${fails.length ? "✗" : "✓"} ${label}   conf=${out.confidence.toFixed(2)}  ${out.proposed_profile}  [${out.risk_flags.join(",") || "no risk"}]  ${(ms / 1000).toFixed(1)}s`);
       console.log(`    goal: ${out.goal}`);
@@ -189,15 +219,31 @@ async function main() {
       if (has("json")) console.log(`    ${JSON.stringify(out)}`);
       console.log();
 
-      results.push({ fixture: fx.name, run: r, ms, output: out, fails, warns });
+      results.push({ fixture: fx.name, run: r, mode, ms, output: out, fails, warns });
     }
   }
 
-  const sorted = [...latencies].sort((a, b) => a - b);
-  const med = sorted.length ? sorted[Math.floor(sorted.length / 2)]! / 1000 : 0;
-  const max = sorted.length ? sorted[sorted.length - 1]! / 1000 : 0;
+  const stats = (xs: number[]) => {
+    const s = [...xs].sort((a, b) => a - b);
+    return {
+      med: s.length ? s[Math.floor(s.length / 2)]! / 1000 : 0,
+      max: s.length ? s[s.length - 1]! / 1000 : 0,
+    };
+  };
+  const overall = stats(latencies);
+
+  for (const [mode, m] of Object.entries(byMode)) {
+    if (!m.total) continue;
+    const l = stats(m.ms);
+    const label = mode === "shot" ? "screenshots" : "text stand-ins";
+    console.log(
+      `  ${label.padEnd(15)} ${m.pass}/${m.total} passed · ${m.warns} warn · ` +
+        `$${m.cost.toFixed(4)} ($${(m.cost / Math.max(1, m.total)).toFixed(4)}/activation) · ` +
+        `median ${l.med.toFixed(1)}s max ${l.max.toFixed(1)}s`
+    );
+  }
   console.log(
-    `${pass}/${total} passed · ${warnCount} warn · $${cost.toFixed(4)} · latency median ${med.toFixed(1)}s max ${max.toFixed(1)}s\n`
+    `\n${pass}/${total} passed · ${warnCount} warn · $${cost.toFixed(4)} · latency median ${overall.med.toFixed(1)}s max ${overall.max.toFixed(1)}s\n`
   );
 
   const outDir = join(HERE, "runs");

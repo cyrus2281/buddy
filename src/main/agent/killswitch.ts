@@ -5,52 +5,69 @@ import { log } from '../log.js';
 import { sidecar } from '../sidecar/supervisor.js';
 import type { KillSwitch } from '../../shared/types.js';
 
-/// The four kill switches (PRD §7.3), behind one event.
+/// The three kill switches (PRD §7.3), behind one event.
 ///
 /// Independence is the requirement: each one has to work when the others
 /// cannot. So the sentinel is a `stat` on a path the UI never touches, the
-/// hotkey is registered by the OS before the run exists, the takeover detector
-/// lives in a separate process, and the Stop button is plain IPC. They converge
-/// on exactly one place — `fire()` — so a run can only be stopped one way and
-/// there is nothing to keep in sync.
+/// hotkey is registered by the OS before the run exists, and the Stop button is
+/// plain IPC. They converge on exactly one place — `fire()` — so a run can only
+/// be stopped one way and there is nothing to keep in sync.
 ///
 /// Naming them honestly: `hotkey` and `stop-button` are pushes from the UI
-/// layer, `sentinel` is polled every turn, and `human-takeover` is a push from
-/// `buddyd`'s event tap.
+/// layer, and `sentinel` is polled every turn.
+///
+/// **Touching the keyboard is deliberately NOT one of them.** buddy runs by
+/// driving the mouse and keyboard, and a person who reaches for either while it
+/// works — to scroll, to glance at another window, to correct a typo — is not
+/// asking it to stop. Making incidental input a kill switch meant the run died
+/// for reasons the user never intended and could not always reconstruct, and it
+/// made the product feel like something you had to sit on your hands through.
+/// Stopping is now always an explicit act: the abort hotkey, the Stop button,
+/// or the ABORT file.
+///
+/// The event tap survives that change and keeps its `BUDDY_MAGIC` filter,
+/// because *recording* that a human touched the machine mid-run is worth real
+/// money in the Run Log — "the user typed at step 12" is often the whole
+/// explanation for a click that landed somewhere strange. It emits
+/// `human-input`, which is an observation, not a halt.
 
 export class KillSwitches extends EventEmitter {
   private armed = false;
   private firedWith: KillSwitch | null = null;
-  private sawSidecarTakeover = false;
+  private sawSidecarInput = false;
 
   constructor() {
     super();
     // Registered once. The sidecar can restart mid-run; the handler survives it
     // because it is attached to the supervisor, not to a process.
-    sidecar.onHumanInput(() => {
-      this.sawSidecarTakeover = true;
-      this.fire('human-takeover');
+    sidecar.onHumanInput((p) => {
+      this.sawSidecarInput = true;
+      // Emitted, never fired. See the note above.
+      if (this.armed) this.emit('human-input', p);
     });
   }
 
   /** Called as `ACTING` begins. Clears any stale sentinel so a file left behind
    *  by a previous abort cannot kill the next run before its first step. */
-  async arm(): Promise<{ takeoverWatch: boolean; takeoverError: string | null }> {
+  async arm(): Promise<{ inputWatch: boolean; inputWatchError: string | null }> {
     this.armed = true;
     this.firedWith = null;
-    this.sawSidecarTakeover = false;
+    this.sawSidecarInput = false;
     this.clearSentinel();
 
     try {
       await sidecar.watchInput();
-      return { takeoverWatch: true, takeoverError: null };
+      return { inputWatch: true, inputWatchError: null };
     } catch (e) {
-      // Accessibility ungranted, or buddyd down. The run can still proceed with
-      // three kill switches, but the user is told which one is missing rather
-      // than being left to assume all four are live.
+      // Accessibility ungranted, or buddyd down. Nothing about the run changes:
+      // this watch only annotates the log. It is logged at debug and not raised
+      // to the user, because telling someone a kill switch is missing when no
+      // kill switch is missing is worse than saying nothing.
       const msg = (e as Error).message;
-      log.warn('killswitch', 'human-takeover watch unavailable', { error: msg });
-      return { takeoverWatch: false, takeoverError: msg };
+      log.debug('killswitch', 'human-input watch unavailable; the run log will not note takeovers', {
+        error: msg,
+      });
+      return { inputWatch: false, inputWatchError: msg };
     }
   }
 
@@ -114,11 +131,11 @@ export class KillSwitches extends EventEmitter {
     return this.armed;
   }
 
-  /** For the checks: did the takeover actually come from buddyd's tap, or was
-   *  it synthesized locally? A switch that was never really fired is not
-   *  tested, and this is what lets the report say which. */
-  get takeoverCameFromSidecar(): boolean {
-    return this.sawSidecarTakeover;
+  /** For the checks: did a `human_input` notification actually arrive from
+   *  buddyd's tap? The tap's `BUDDY_MAGIC` filter is what makes that signal
+   *  mean anything, and this is what lets the report say it was exercised. */
+  get sawInputFromSidecar(): boolean {
+    return this.sawSidecarInput;
   }
 }
 
@@ -128,6 +145,5 @@ export const killSwitches = new KillSwitches();
 export const KILL_SWITCH_LABEL: Record<KillSwitch, string> = {
   hotkey: 'the abort hotkey',
   sentinel: '~/.buddy/ABORT',
-  'human-takeover': 'you took over the keyboard',
   'stop-button': 'the Stop button',
 };

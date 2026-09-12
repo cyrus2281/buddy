@@ -59,6 +59,14 @@ const CLAMPS: Partial<Record<keyof Settings, [number, number]>> = {
   retentionDays: [1, 7],
   phashThreshold: [0, 32],
   idleSkipSeconds: [10, 3_600],
+  // M3. The floors are cost controls, not preferences: a 10-second T2 would
+  // bill roughly eighteen times the budget PRD §5 sets, and a user who typed it
+  // into a number field should not be able to.
+  observeIntervalMs: [60_000, 1_800_000],
+  observeMinGapMs: [15_000, 600_000],
+  rollupIntervalMs: [600_000, 21_600_000],
+  sessionIdleMs: [60_000, 3_600_000],
+  dailyCapUsd: [0, 50],
 };
 
 class SettingsStore extends EventEmitter {

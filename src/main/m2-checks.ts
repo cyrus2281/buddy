@@ -38,6 +38,7 @@ import { AgentRunner, HALT_TEXT } from './agent/runner.js';
 import { Executor, type Frame } from './agent/executor.js';
 import { KillSwitches } from './agent/killswitch.js';
 import { classify, enforce, hostAllowed, policyMatrix, type TargetInfo } from './agent/guardrails.js';
+import { operator } from './agent/orchestrator.js';
 import { BudgetTracker, costOf } from './agent/budget.js';
 import { buildTools, COMPUTER_ACTIONS, COMPUTER_TOOLSET_NAME, FinishSchema } from './agent/tools.js';
 import { buildSystemPrompt } from './agent/prompt.js';
@@ -663,15 +664,7 @@ async function run() {
     return 'arm() clears a stale sentinel — an old abort cannot kill tomorrow’s run';
   });
 
-  await check('kill switch 3 — human takeover stops a run mid-flight', async () => {
-    // The signal buddyd's event tap sends, delivered the way it is delivered.
-    const { view, turns } = await killDuringRun((r) => r.stop('human-takeover'));
-    eq(view.status, 'needs_human', 'parked');
-    ok(/took over/.test(view.haltReason ?? ''), `haltReason names it: ${view.haltReason}`);
-    return `fired at turn ${turns}: "${view.haltReason}"`;
-  });
-
-  await check('kill switch 4 — Stop stops a run mid-flight', async () => {
+  await check('kill switch 3 — Stop stops a run mid-flight', async () => {
     const { view, turns } = await killDuringRun((r) => r.stop('stop-button'));
     eq(view.status, 'needs_human', 'parked');
     ok(/Stop button/.test(view.haltReason ?? ''), `haltReason names it: ${view.haltReason}`);
@@ -689,6 +682,173 @@ async function run() {
     return `${persisted.length} steps preserved, run row closed as needs_human`;
   });
 
+  // ══ Leashless, and session grants (PRD §7.1) ══════════════════════════════
+
+  await check('leashless allows every class the other two profiles gate or deny', () => {
+    const rows: [string, string][] = [];
+    for (const [cls, byProfile] of Object.entries(policyMatrix)) {
+      rows.push([cls, byProfile.leashless]);
+      eq(byProfile.leashless, 'allow', `${cls} under leashless`);
+    }
+    // The two that are `deny` under BOTH other profiles are the point: this is
+    // not "a bit more permissive", it is everything.
+    eq(policyMatrix.purchase.attended, 'deny', 'purchase is denied under attended');
+    eq(policyMatrix.credentials.unattended, 'deny', 'credentials are denied under unattended');
+    eq(policyMatrix.purchase.leashless, 'allow', 'and both are allowed under leashless');
+    eq(policyMatrix.credentials.leashless, 'allow', 'explicitly');
+    return `${rows.length} classes, all allow — including purchase and credentials`;
+  });
+
+  await check('a leashless run dispatches a send with no gate and no denial', async () => {
+    const exec = new FakeExecutor({ target: { element: sendEl() } });
+    const m = new ScriptedModel((t) =>
+      t === 0 ? turn([toolUse('left_click', { coordinate: [100, 100] })]) : finishTurn(),
+    );
+    const r = runner(m, exec);
+    let gated = false;
+    r.on('gate', () => {
+      gated = true;
+    });
+    const v = await r.run({ goal: 'send it', profile: 'leashless', allowlist: { apps: [], domains: [] } });
+    eq(v.status, 'done', 'the run completed');
+    eq(gated, false, 'nothing was put to the user');
+    eq(exec.dispatched.some((d) => d.action === 'left_click'), true, 'the click on Send was dispatched');
+    // Recorded under the class it still classified as, so the log says what it
+    // did even though nothing stopped it.
+    const step = v.steps.find((st) => st.tool === 'left_click');
+    eq(step?.verdict?.class, 'send', 'the step still records the class');
+    eq(step?.verdict?.decision, 'allow', 'allowed rather than gated');
+    return 'a Send button clicked unattended with no confirmation — recorded as class `send`';
+  });
+
+  await check('leashless is refused unless it has been turned on in Settings', async () => {
+    settings.update({ leashlessEnabled: false });
+    operator.setClientFactory(() => new ScriptedModel(() => finishTurn()));
+    let err = '';
+    try {
+      await operator.start({ goal: 'g', profile: 'leashless', allowlist: { apps: [], domains: [] } });
+    } catch (e) {
+      err = (e as Error).message;
+    }
+    ok(/Leashless mode is off/.test(err), `refused before the loop started: ${err.slice(0, 60)}`);
+    ok(/send|delete|install|credential/i.test(err), 'and the refusal says what it would have allowed');
+
+    // The guard is in the orchestrator, not in the HUD: a button is not a guard.
+    settings.update({ leashlessEnabled: true });
+    const v = await operator.start({ goal: 'g', profile: 'leashless', allowlist: { apps: [], domains: [] } });
+    eq(v.profile, 'leashless', 'and once enabled it runs');
+    settings.update({ leashlessEnabled: false });
+    operator.setClientFactory(null);
+    return 'the switch lives in Settings; startRun enforces it, whoever calls it';
+  });
+
+  await check('“allow for this run” stops the second ask for the same class and app', async () => {
+    const exec = new FakeExecutor({ target: { element: sendEl() } });
+    let r!: AgentRunner;
+    const gates: string[] = [];
+    // Four sends in a row. Without a grant this asks four times.
+    const m = new ScriptedModel((t) =>
+      t < 4 ? turn([toolUse('left_click', { coordinate: [10 + t, 10] })]) : finishTurn(),
+    );
+    r = runner(m, exec);
+    r.on('gate', (g) => {
+      gates.push(g.sessionScope);
+      // First ask: a plain approval. Second: the blanket grant.
+      setImmediate(() => r.resolveGate(gates.length === 1 ? 'approve' : 'approve-session'));
+    });
+    const v = await r.run({ goal: 'four sends', profile: 'attended', allowlist: ALLOW_ALL });
+
+    eq(v.status, 'done', 'the run finished');
+    eq(gates.length, 2, `asked twice, not four times (asked ${gates.length})`);
+    eq(exec.dispatched.filter((d) => d.action === 'left_click').length, 4, 'all four were dispatched');
+    eq(v.sessionGrants.length, 1, 'one grant is recorded on the run');
+    ok(/sending in TextEdit/.test(v.sessionGrants[0]!), `and names its scope: ${v.sessionGrants[0]}`);
+    // A confirmation the user stopped seeing must still be somewhere.
+    const notes = v.steps.filter((st) => st.tool === 'gate-granted');
+    ok(notes.length >= 2, `the log records every action it covered (${notes.length} notes)`);
+    return `4 sends, 2 asks, 1 grant ("${v.sessionGrants[0]}"), 4 dispatched, ${notes.length} log notes`;
+  });
+
+  await check('a session grant is scoped to one app, not to the class', async () => {
+    // The failure this prevents: approving one Slack message also pre-approving
+    // an email. Both are class `send`; only the app differs.
+    let app = 'com.tinyspeck.slackmacgap';
+    const exec = new FakeExecutor({ target: { element: sendEl() } });
+    (exec as unknown as { opts: FakeOptions }).opts.target = {
+      element: sendEl(),
+      get bundleId() {
+        return app;
+      },
+      get appName() {
+        return app === 'com.tinyspeck.slackmacgap' ? 'Slack' : 'Mail';
+      },
+    } as never;
+
+    let r!: AgentRunner;
+    const scopes: string[] = [];
+    const m = new ScriptedModel((t) => {
+      if (t === 2) app = 'com.apple.mail'; // switch apps mid-run
+      return t < 4 ? turn([toolUse('left_click', { coordinate: [10, 10] })]) : finishTurn();
+    });
+    r = runner(m, exec);
+    r.on('gate', (g) => {
+      scopes.push(g.sessionScope);
+      setImmediate(() => r.resolveGate('approve-session'));
+    });
+    const v = await r.run({ goal: 'slack then mail', profile: 'attended', allowlist: ALLOW_ALL });
+
+    eq(v.status, 'done', 'finished');
+    ok(scopes.some((x) => /Slack/.test(x)), `Slack was asked about: ${scopes.join(' | ')}`);
+    ok(scopes.some((x) => /Mail/.test(x)), 'and Mail was asked about separately');
+    eq(v.sessionGrants.length, 2, `two grants, one per app (got ${v.sessionGrants.length})`);
+    return `grants: ${v.sessionGrants.join(' · ')} — one yes never became the other`;
+  });
+
+  await check('a session grant dies with the run', async () => {
+    const mk = async (answer: 'approve' | 'approve-session') => {
+      const exec = new FakeExecutor({ target: { element: sendEl() } });
+      let r!: AgentRunner;
+      let asks = 0;
+      const m = new ScriptedModel((t) =>
+        t < 2 ? turn([toolUse('left_click', { coordinate: [10, 10] })]) : finishTurn(),
+      );
+      r = runner(m, exec);
+      r.on('gate', () => {
+        asks++;
+        setImmediate(() => r.resolveGate(asks === 1 ? answer : 'approve'));
+      });
+      const v = await r.run({ goal: 'two sends', profile: 'attended', allowlist: ALLOW_ALL });
+      return { asks, grants: v.sessionGrants.length };
+    };
+    const granted = await mk('approve-session');
+    eq(granted.asks, 1, 'with a grant, the second send did not ask');
+
+    // A fresh runner is a fresh run: nothing carries over.
+    const fresh = await mk('approve');
+    eq(fresh.asks, 2, 'a new run asks again from scratch');
+    eq(fresh.grants, 0, 'and starts with no grants');
+    return 'grants are per-run state, never persisted — a standing grant is config nobody maintains';
+  });
+
+  await check('a denial is never grantable, because a denial never reaches the gate', async () => {
+    // Credentials and purchase are `deny` under attended and unattended, so the
+    // "allow for this run" path cannot widen them: there is no gate to answer.
+    const exec = new FakeExecutor({
+      target: { focused: { role: 'AXSecureTextField', subrole: '', title: 'Password', isSecureTextField: true } },
+    });
+    let gated = false;
+    const m = new ScriptedModel((t) => (t === 0 ? turn([toolUse('type', { text: 'hunter2' })]) : finishTurn()));
+    const r = runner(m, exec);
+    r.on('gate', () => {
+      gated = true;
+    });
+    const v = await r.run({ goal: 'type a password', profile: 'attended', allowlist: ALLOW_ALL });
+    eq(gated, false, 'no gate was offered, so no grant could be given');
+    eq(v.status, 'needs_human', 'the run parked');
+    eq(v.sessionGrants.length, 0, 'and no grant exists');
+    return 'the deny path is untouched by the grant machinery — there is nothing to say yes to';
+  });
+
   await check('a second kill switch does not stop a second run', () => {
     const k = new KillSwitches();
     // arm() is async only because of the sidecar; the latch is synchronous.
@@ -697,6 +857,76 @@ async function run() {
     eq(k.fire('sentinel'), false, 'the second is a no-op');
     eq(k.fired, 'hotkey', 'and the first one is what is reported');
     return 'first switch wins; the rest are no-ops';
+  });
+
+  // §7.3: touching the keyboard is not a kill switch. This is the inverse of a
+  // check that used to assert the opposite, and it is asserted the same way —
+  // the signal is delivered mid-run, with plenty of work queued behind it, and
+  // the run is shown to carry on. A run that finished because nothing ever
+  // reached it would pass this vacuously, so the note it leaves is asserted too.
+  await check('human input does NOT stop a run, and is recorded in the log', async () => {
+    const exec = new FakeExecutor();
+    const kill = new KillSwitches();
+    (kill as unknown as { armed: boolean }).armed = true;
+    let turns = 0;
+    const m = new ScriptedModel((t) => {
+      turns = t + 1;
+      // Three separate bursts of human input, spread through the run.
+      if (t === 1 || t === 3 || t === 5) {
+        setImmediate(() => kill.emit('human-input', { kind: t === 3 ? 'mouse' : 'key', t: Date.now() }));
+      }
+      return t < 8 ? turn([toolUse('left_click', { coordinate: [2, 2] })]) : finishTurn();
+    });
+    const r = runner(m, exec, kill);
+    // The runner subscribes on arm(); arm() here cannot reach a real sidecar, so
+    // the subscription is made the same way the runner makes it.
+    const v = await start(r, 'a run somebody types during', 'attended', { maxSteps: 500 });
+
+    eq(v.status, 'done', 'the run finished rather than parking');
+    eq(kill.fired, null, 'no kill switch fired');
+    ok(turns >= 8, `the loop ran to its scripted end (${turns} turns)`);
+    ok(exec.dispatched.length >= 8, `and kept dispatching (${exec.dispatched.length} actions)`);
+    return `${turns} turns, ${exec.dispatched.length} actions, 3 input bursts, nothing stopped`;
+  });
+
+  await check('the takeover note is coalesced rather than one row per keystroke', async () => {
+    const exec = new FakeExecutor();
+    const kill = new KillSwitches();
+    (kill as unknown as { armed: boolean }).armed = true;
+    const m = new ScriptedModel((t) => {
+      if (t === 1) {
+        // A burst of typing: one event to a reader, thirty to an event tap.
+        setImmediate(() => {
+          for (let i = 0; i < 30; i++) kill.emit('human-input', { kind: 'key', t: Date.now() });
+        });
+      }
+      return t < 5 ? turn([toolUse('key', { text: 'a' })]) : finishTurn();
+    });
+    const r = runner(m, exec, kill);
+    r.on('step', () => {});
+    const v = await start(r, 'coalescing', 'attended', { maxSteps: 500 });
+    const notes = v.steps.filter((st) => st.tool === 'human-input');
+    eq(v.status, 'done', 'still finished');
+    eq(notes.length, 1, `30 events collapsed to one note (got ${notes.length})`);
+    ok(/still running/.test(String(notes[0].result)), 'and the note says the run is still going');
+    eq(notes[0].isError, false, 'it is a note, not an error');
+    return `30 events → 1 note: "${String(notes[0].result).slice(0, 60)}…"`;
+  });
+
+  await check('a takeover note does not count against the step budget', async () => {
+    const exec = new FakeExecutor();
+    const kill = new KillSwitches();
+    (kill as unknown as { armed: boolean }).armed = true;
+    const m = new ScriptedModel((t) => {
+      if (t === 0) setImmediate(() => kill.emit('human-input', { kind: 'mouse', t: Date.now() }));
+      return t < 2 ? turn([toolUse('left_click', { coordinate: [3, 3] })]) : finishTurn();
+    });
+    const v = await start(runner(m, exec, kill), 'budget', 'attended', { maxSteps: 500 });
+    const notes = v.steps.filter((st) => st.tool === 'human-input');
+    ok(notes.length >= 1, 'a note was recorded');
+    eq(v.usage.steps, v.steps.length - notes.length, 'the meter excludes it');
+    ok(v.humanInputs >= 1, `and the view reports the count (${v.humanInputs})`);
+    return `${v.steps.length} log rows, ${v.usage.steps} budgeted steps, ${v.humanInputs} inputs seen`;
   });
 
   // ══ Budgets (PRD §6.5) ════════════════════════════════════════════════════
@@ -1069,7 +1299,7 @@ async function run() {
       const err = await rpcErr(rpc, 'input', { action: 'mouse_move', coordinate: [10, 10] });
       ok(/accessibility_not_granted/.test(err ?? ''), `named error, got: ${err}`);
       const tap = await rpcErr(rpc, 'watch_input', {});
-      ok(/accessibility_not_granted/.test(tap ?? ''), 'and the takeover tap says so too');
+      ok(/accessibility_not_granted/.test(tap ?? ''), 'and the input tap says so too');
       return 'the model is told delivery failed rather than believing it clicked';
     });
 
@@ -1098,7 +1328,7 @@ async function run() {
       return `pointer moved ${before.x},${before.y} → 420,240 and back`;
     });
 
-    await check('the human-takeover event tap starts and stops', async () => {
+    await check('the input event tap starts and stops', async () => {
       if (!grants.accessibility) skip('Accessibility is not granted, so the event tap cannot be created.');
       eq((await rpc('watch_input', {})).watching, true, 'tap started');
       eq((await rpc('unwatch_input', {})).watching, false, 'tap stopped');
@@ -1126,11 +1356,13 @@ async function run() {
       eq(
         notes.filter((n) => n.method === 'human_input').length,
         0,
-        'buddy’s own keystroke did NOT trip the takeover switch',
+        'buddy’s own keystroke produced no human_input notification',
       );
 
       // Now the same keystroke from a different process, which carries no
-      // BUDDY_MAGIC. This is what a human hand looks like to the tap.
+      // BUDDY_MAGIC. This is what a human hand looks like to the tap. It no
+      // longer stops a run (§7.3) — it is what puts the takeover note in the
+      // log, and the note is only worth anything if this discrimination holds.
       await new Promise<void>((resolve) => {
         const osa = spawn('/usr/bin/osascript', ['-e', 'tell application "System Events" to key code 80']);
         osa.on('exit', () => resolve());
@@ -1141,8 +1373,15 @@ async function run() {
       await rpc('unwatch_input', {});
       await rpc('input', { action: 'mouse_move', coordinate: [before.x, before.y] });
 
-      ok(fired.length >= 1, `an untagged keystroke DID trip it (got ${fired.length} notifications)`);
-      eq(fired[0].params.kind, 'key', 'and it is reported as a key');
+      ok(fired.length >= 1, `an untagged keystroke DID notify (got ${fired.length} notifications)`);
+      // Among, not first: this runs on a real machine, and a hand brushing the
+      // trackpad during the window puts a `scroll` at the front of the list.
+      // The claim is that an untagged keystroke is seen, not that nothing else
+      // on the machine moved.
+      ok(
+        fired.some((n) => n.params.kind === 'key'),
+        `a key notification is among them (kinds: ${fired.map((n) => n.params.kind).join(', ')})`,
+      );
       return 'BUDDY_MAGIC discriminates: own events filtered, another process’s caught';
     });
 

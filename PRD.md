@@ -62,6 +62,7 @@ buddy.app  (Electron shell, unsigned/self-signed — free to install)
     │                        pointer (§7.2)
     ├── input(action) → CGEvent synthesis
     ├── watch_input() → event tap; pushes `human_input` for anything untagged
+    │                    (a run-log annotation, not a kill switch — §7.3)
     ├── secure_input() → Bool  (IsSecureEventInputEnabled)
     ├── frontmost() → {bundleId, appName, windowTitle, idleSeconds}
     └── permissions() → {screenRecording, accessibility}
@@ -128,6 +129,14 @@ A **session** is a contiguous run of activity ending after 10 minutes idle or a 
 
 Tasks carry `status ∈ open | blocked | waiting | done` and are the primary input to goal inference. A task that goes `blocked` or `waiting` is exactly what Story B resumes.
 
+**Scope widens on its own.** A `session` task still open when the session ends
+becomes `day`; a `day` task still alive at midnight becomes `week`. It only ever
+widens, and only for tasks that are not `done`. Without this, `scope` is a label
+nobody ever changes and every task in the database reads as "session" forever.
+
+**`done` can be reopened**, and the transition is logged. Refusing it would make
+the memory uncorrectable, which is the one thing §8.3 says it must not be.
+
 ---
 
 ## 5. The Observer
@@ -138,10 +147,28 @@ Continuous full-fidelity capture sent to a model is unaffordable and unnecessary
 |---|---|---|---|
 | **T0** signals | 2 s | free | Frontmost app, window title, idle time, display changes. Detects context switches. |
 | **T1** frames | 15 s (configurable) | free | Screenshot → pHash. If pHash distance < 8 **and** app unchanged, discard and extend the current segment. Otherwise persist. Typical keep rate 20–35%. |
-| **T2** observe | every 3 min, or immediately on context switch | ~$0.01 | 3–6 most-changed new frames + the T0 event log → **Haiku 4.5**, structured output → one `observation` row. |
+| **T2** observe | every 3 min, or on an **app** switch (debounced) | ~$0.005 | 3–6 most-changed new frames + the T0 event log → **Haiku 4.5**, structured output → one `observation` row. |
 | **T3** rollup | hourly + session end + midnight | ~$0.05 | Observations → recap notes; extract and merge relation + task notes. **Sonnet 5**. |
 
+**What "context switch" means at T2, and why it is narrower than at T1.** The T0
+signal marks a switch whenever the frontmost **app or window title** changes,
+which is the right trigger for a free screenshot and a ruinous one for a billed
+model call — a title changes on every keystroke in a document with an autosaving
+name. T2 triggers on a change of **application**, no more often than
+`observeMinGapMs` (45 s default), and only with at least two new frames behind
+it. Without the floor, alt-tabbing between two windows bills an observation per
+keypress. Measured on the machine this was built on, T2 costs about **$0.005**
+per observation rather than the $0.01 estimated here.
+
 **Budget:** ~$1.50–2.50 per 8-hour day. Surfaced live in Settings as a running daily total with a hard cap that pauses T2/T3 when hit.
+
+**The cap pauses T2 and T3. It never blocks the user.** Goal inference, the
+Operator, and M4's wake checks all spend past it, because they are things a
+person asked for in the moment, and a cost control that silently turns the
+hotkey into a blank stare is not a cost control — it is an outage with a
+plausible explanation. The risk R5 is actually about is the Observer running all
+night against a machine somebody left logged in, and that is exactly what the cap
+stops.
 
 **Tier sizing gotcha:** Haiku 4.5 caps images at 1568 px long edge / ~1.15 MP. Downscale observer frames to **1366×768** (1.05 MP). Operator frames go to Opus 5 and use a different ceiling — §6.2.
 
@@ -152,7 +179,7 @@ Continuous full-fidelity capture sent to a model is unaffordable and unnecessary
 - **Frames:** `expires_at = ts + retentionDays` (default 1, range 1–7). Purge sweep on launch and hourly; unlinks the file and tombstones the row.
 - **Notes, observations, runs:** kept indefinitely. Exportable as JSON. Deletable per-item and in bulk from the UI.
 - **Run-step screenshots** are the one exception to the daily purge, and they have to be: the Run Log is the trust surface (§8.5), and a log whose pictures vanish overnight cannot answer "what did buddy click". They live with the run under `runs/<id>/`, not in the frame vault, so the sweep never sees them — and deleting a run deletes them with it. The Run Log says so on its face rather than leaving the user to infer that one kind of screenshot outlives the other.
-- **Exclusion list:** bundle IDs and window-title regexes that are never captured. Ships pre-populated with 1Password, Keychain Access, and Passwords. Private/incognito browser windows are excluded by title heuristic. When the AX tree reports a focused `AXSecureTextField`, T1 skips the frame entirely.
+- **Exclusion list:** bundle IDs and window-title regexes that are never captured. Ships pre-populated with 1Password, Keychain Access, and Passwords. Private/incognito browser windows are excluded by title heuristic, and so are **billing and payment pages** — added in M3 after watching a real observation quote a card's last four digits back from a billing screen that happened to be open. Nothing was malfunctioning: §5.2 says plainly that frames go to a model. But a payment page is credential-adjacent in the same way a password manager is, and leaving it out costs nothing. Every rule is disableable. When the AX tree reports a focused `AXSecureTextField`, T1 skips the frame entirely.
 
 ### 5.2 Privacy, stated plainly
 
@@ -287,21 +314,50 @@ The `finish` tool takes:
 
 ### 6.7 Measured: goal inference
 
-From [`evals/goal-inference`](evals/goal-inference/README.md), Opus 5, 5 fixtures × 2–3 runs:
+From [`evals/goal-inference`](evals/goal-inference/README.md), Opus 5, `effort=high`,
+5 fixtures × 3 runs. Two modalities: the original text stand-ins, and — added in M3 —
+the same five bundles carrying **real screenshots**.
+
+| | Text stand-ins | Real screenshots |
+|---|---|---|
+| Passed | 15/15 | 15/15 |
+| Cost per activation | **$0.024** | **$0.067** |
+| Latency, median | **8.5 s** | **13.7 s** |
+| Latency, worst (ambiguous case) | 22.4 s | 29.7 s |
 
 | | |
 |---|---|
-| Cost per activation | **~$0.024** (~$0.12 per 5-fixture suite) |
-| Latency, median | **8.6 s** |
-| Latency, worst (ambiguous case) | **22 s** |
 | `effort=medium` vs `high` | median 8.0 s vs 8.3 s — **no meaningful latency win**, and medium is less stable |
 
 **Use `effort: "high"`.** The sweep's answer is that medium buys nothing here.
 
+**The screenshot result was not the expected one.** Until M3 the fixtures had only
+ever run against prose, which tests signal weighting, calibration and injection
+resistance but **not visual grounding** — and a `description` string saying *"the
+cursor sits in the empty body under 'Blockers'"* has already done the model's
+hardest job for it. The expectation was that real pixels would be noisier and the
+numbers would get worse. Accuracy did not move: 15/15 either way, no soft warns
+either way. The images are demonstrably being read rather than skimmed — the
+recorded runs cite Linear's `Cycle 14` and `broker` label and the original quote
+email in Mail's sidebar, neither of which appears in any `description`.
+
+**What moved was cost: 2.8×, to $0.067 an activation.** Twenty hotkey presses in a
+day is $1.34, comparable to a whole day of observing. Three frames at 1728×1117
+are roughly 7.7k image tokens. If activation cost ever needs to come down, the
+lever is the frames rather than the prompt — §6.1 asks for full resolution on the
+**newest** frame only, and buddy already downscales the two behind it to the
+Observer's ceiling.
+
+One caveat stated plainly: the recorded screenshots are *reconstructions* rendered
+at real frame dimensions, not captures of a live desktop — a real desktop carries
+notification banners, half-occluded windows and private data that does not belong
+in a repository. They are meaningfully harder than prose and meaningfully easier
+than a real machine. The eval README says so on its face.
+
 Two findings that changed the design:
 
 - **The profile rule must be about reversibility, not app category.** Classifying by "documents and local files" left the model split 50/50 on writing into a shared team doc, across repeated runs and two rewordings. Reframing the question as *"if this goes wrong with nobody watching, how hard is it to undo?"* resolved it. A wrong paragraph can be deleted; a sent email cannot be recalled.
-- **Profile on a borderline case is advisory, and the eval treats it that way.** The residual instability (`blocked-resume` proposes `unattended` in roughly 5 of 7 runs) always errs toward `attended`, never toward unattended on something risky. Since the user confirms the profile in the same keystroke as the goal, a borderline case landing on `attended` costs one keypress. The eval asserts the safety-critical direction hard (`profileMustNotBe`) and the preference softly (`preferProfile`, warns only).
+- **Profile on a borderline case is advisory, and the eval treats it that way.** The instability first measured here (`blocked-resume` proposing `unattended` in roughly 5 of 7 runs) did **not** reproduce in M3's 30-run pass — zero soft warns across both modalities. That is not evidence it is gone; it is one more sample of a borderline judgement, and the reason it is a warn rather than a failure is unchanged. When it does wobble it errs toward `attended`, never toward unattended on something risky, and since the user confirms the profile in the same keystroke as the goal, a borderline case landing on `attended` costs one keypress. The eval asserts the safety-critical direction hard (`profileMustNotBe`) and the preference softly (`preferProfile`, warns only).
 
 Risk flags needed explicit per-flag definitions. Left loose (*"flag what the task plausibly reaches"*), the model flagged `sends_message` for writing a document and `posts_public` for a Linear issue — collapsing every run into `attended` and making the unattended profile unreachable. Over-flagging is not a safe default; it trains users to click through confirmations.
 
@@ -339,12 +395,36 @@ These are heuristics and defense-in-depth, not proofs. **Attended mode assumes a
 
 ### 7.3 Kill switches
 
-Four, independent, all always live during `ACTING`:
+Three, independent, all always live during `ACTING`:
 
 1. **Global hotkey** `⌥⌘.` — immediate hard stop.
 2. **Sentinel file** `~/.buddy/ABORT` — stat'd every turn. Works when the UI is wedged.
-3. **Human takeover** — a real keystroke or click during `ACTING` pauses the loop instantly. Buddy's own events are filtered by the `BUDDY_MAGIC` tag from §6.4, so it never trips on itself. Implemented as a **listen-only** `CGEventTap` on the session tap, watching key-down, the three mouse-downs, and scroll — listen-only so a wedged buddy cannot also wedge the user's keyboard. It ignores everything for its first 0.6 s, or the Return that confirmed the run reads as the user taking over from it.
-4. **Menu bar Stop** — always present, always enabled.
+3. **Stop** — in the HUD and in the menu bar. Always present, always enabled.
+
+**Stopping is always an explicit act.** Touching the keyboard or the mouse
+while buddy is working does **not** stop it.
+
+This was the opposite in M2, and the reversal is deliberate. buddy works *by*
+driving the mouse and keyboard, so the user's hands and buddy's are on the same
+controls. Someone who scrolls to watch what it is doing, glances at another
+window, or fixes a typo in a different app has not asked it to stop — and a run
+that dies for that reason dies for a reason the user cannot always reconstruct.
+The cost of the mistake is asymmetric: an unwanted stop throws away real work
+and three explicit stops exist to catch the case where someone wants one, while
+the failure it was supposed to prevent — buddy and a human fighting over the
+same field — is visible on screen as it happens, with the hotkey a keystroke
+away.
+
+**The event tap stays, as an observation rather than a halt.** The listen-only
+`CGEventTap` on the session tap, filtering buddy's own events by the
+`BUDDY_MAGIC` tag from §6.4, still runs during `ACTING` and still ignores
+everything for its first 0.6 s. What it produces is a line in the run log —
+*"you used the keyboard while buddy was working"*, coalesced to one entry per
+five seconds — and a note in the HUD saying the run is still going. That line is
+worth keeping on its own: when buddy clicks where a button used to be, "the user
+moved the window at step 12" is frequently the entire explanation, and the Run
+Log is where a person goes to find it (§8.5). Listen-only remains the rule, so a
+wedged buddy cannot also wedge the user's keyboard.
 
 ### 7.4 Prompt injection
 
@@ -420,14 +500,29 @@ Electron + React + Tailwind + Framer Motion scaffold · `buddyd` Swift binary wi
 **Exit:** frames accumulating on disk, dedupe working, old frames purging, hotkey opens a HUD.
 
 ### M2 — Day 2: it acts ← *demo-critical*
-`AgentRunner` with `computer_toolset_20260801` · batch fail-stop semantics · `toolset_name` on every result · coordinate scaling with the ≤2576 px / ≤3.75 MP guard · `describe_focused_window` · `finish` tool · secure-input error path · **both profiles** and the shared guardrail enforcement point · all four kill switches · budgets · live Run Log · screenshot pruning + prompt caching.
+`AgentRunner` with `computer_toolset_20260801` · batch fail-stop semantics · `toolset_name` on every result · coordinate scaling with the ≤2576 px / ≤3.75 MP guard · `describe_focused_window` · `finish` tool · secure-input error path · **both profiles** and the shared guardrail enforcement point · all kill switches · budgets · live Run Log · screenshot pruning + prompt caching.
 **Exit:** hotkey → typed goal → buddy completes a real two-app task end to end, and every kill switch actually stops it.
 
-**Status: built, and verified as far as this machine allows** — `npm run check:m2`. All four kill switches are fired mid-run against the real `AgentRunner` and shown to park it with its log intact; the guardrail matrix, batch fail-stop, the deny-parks rule, budgets, pruning, and the cache-breakpoint layout are all asserted mechanically rather than eyeballed. `BUDDY_MAGIC` is verified to discriminate for real: buddy's own synthesized keystroke does not trip the takeover switch and an identical keystroke from another process does. The model is a scripted client, so the one thing the checks cannot cover is a live Opus 5 run — see README, "What M2 verifies".
+**Status: built, and verified as far as this machine allows** — `npm run check:m2`. Every kill switch is fired mid-run against the real `AgentRunner` and shown to park it with its log intact; the guardrail matrix, batch fail-stop, the deny-parks rule, budgets, pruning, and the cache-breakpoint layout are all asserted mechanically rather than eyeballed. `BUDDY_MAGIC` is verified to discriminate for real: buddy's own synthesized keystroke produces no `human_input` notification and an identical keystroke from another process does — which is what makes the §7.3 takeover *note* mean something, now that it is a note and not a halt. The model is a scripted client, so the one thing the checks cannot cover is a live Opus 5 run — see README, "What M2 verifies".
 
 ### M3 — Day 3: it remembers
 T2 observer (Haiku 4.5, structured output) · T3 rollup (Sonnet 5) into recap / relation / task notes · dedupe and merge for relations · goal inference from the Context Bundle, replacing M2's typed goal · Home + Notes UI with FTS5 · local OCR if time allows.
 **Exit:** buddy infers the goal with no typing, and the notes it shows are recognizably true.
+
+**Status: built and verified** — `npm run check:m3`, 66 checks. The relation merge
+(four spellings of one person → one row with aliases, and two rows folded into
+one), the task lifecycle and scope widening, the tier cadence and the app-level
+context-switch trigger with its debounce, the daily cap actually stopping T2 and
+T3 before a request is built, retention leaving a note that cites expired frames
+intact and labelled, and FTS5 search through edits, deletes and characters that
+are FTS5 syntax — all asserted mechanically against the real modules, with the
+model replaced by a scripted structured-output client.
+
+**Local OCR was cut**, as §10's cut list says to. Nothing depends on it.
+
+The half of the exit criterion that is not mechanical — *"the notes it shows are
+recognizably true"* — was checked by running buddy against a real machine and
+reading what it wrote. See README, "What M3 verifies".
 
 ### M4 — Day 4: it waits, and it looks good
 Standby + wakeups with the cheap Haiku condition check · resume-with-context · notifications · Timeline · full Settings · OpenAI + local providers for observation and Q&A · ask-about-my-day · animation and polish pass · unsigned `.dmg` + self-signed identity for stable TCC.
@@ -512,6 +607,6 @@ Two consequences worth carrying into M2 and M4:
 2. From a cold hotkey press with **zero typing**, buddy states the correct goal with evidence on ≥7 of 10 attempts across 3 different real tasks.
 3. It completes a two-app task (read in app A → act in app B) end to end.
 4. A gated action triggers a confirm in attended mode and a `needs_human` park in unattended mode.
-5. All four kill switches stop an in-flight run within one turn.
+5. All three kill switches stop an in-flight run within one turn, and using the keyboard mid-run does not.
 6. It goes to standby waiting on a condition, wakes on a timer, detects the condition, and resumes.
 7. Frames from two days ago are gone; the notes made from them are not.

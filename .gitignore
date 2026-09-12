@@ -8,3 +8,9 @@ release/
 sidecar/build/
 spike/*/BuddySpike.app
 spike/*/buddyd-spike
+
+# Recorded screenshot fixtures: ~10 MB of PNG regenerable in one command from
+# the scene code beside them (`npm run eval:record`). The text fixtures they are
+# derived from are checked in; these are build output.
+evals/goal-inference/fixtures/*.shot.json
+evals/goal-inference/shots/

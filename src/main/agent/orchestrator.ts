@@ -1,11 +1,12 @@
 import { EventEmitter } from 'node:events';
 import { log } from '../log.js';
 import { secrets } from '../secrets.js';
+import { settings } from '../settings.js';
 import { runs } from '../store/runs.js';
 import { AnthropicClient, type ModelClient } from './client.js';
 import { killSwitches } from './killswitch.js';
 import { AgentRunner } from './runner.js';
-import type { PendingGate, RunStep, RunView, StartRunRequest } from '../../shared/types.js';
+import type { GateAnswer, KillSwitch, PendingGate, RunStep, RunView, StartRunRequest } from '../../shared/types.js';
 
 /// One run at a time, and one place that knows which.
 ///
@@ -41,6 +42,16 @@ export class Operator extends EventEmitter {
     }
     if (!req.goal.trim()) throw new Error('A run needs a goal.');
 
+    // §7.1: leashless has to be turned on in Settings before it can be chosen.
+    // Checked here rather than only in the HUD, because the HUD is one caller
+    // of `startRun` and a guard that lives in a button is not a guard.
+    if (req.profile === 'leashless' && !settings.get().leashlessEnabled) {
+      throw new Error(
+        'Leashless mode is off. It lets buddy send, delete, install, buy, and type ' +
+          'credentials with nobody asked — turn it on in Settings if that is what you want.',
+      );
+    }
+
     const client = this.clientFactory
       ? this.clientFactory()
       : (() => {
@@ -62,8 +73,9 @@ export class Operator extends EventEmitter {
     runner.on('gate', (g: PendingGate) => this.emit('gate', g));
     runner.on('narration', (n) => this.emit('narration', n));
 
-    // Kill switches 1–3 arrive asynchronously; they land on the runner that was
-    // live when they fired, not on whatever is current when they are handled.
+    // The hotkey and the sentinel arrive asynchronously; they land on the runner
+    // that was live when they fired, not on whatever is current when they are
+    // handled.
     const onFired = (which: Parameters<typeof runner.stop>[0]) => {
       if (runner.view().status === 'running' || runner.view().status === 'gated') runner.stop(which);
     };
@@ -79,14 +91,14 @@ export class Operator extends EventEmitter {
     }
   }
 
-  /** Kill switch 4, and the funnel for 1–3 from the UI layer. */
-  stop(via: 'stop-button' | 'hotkey' | 'sentinel' | 'human-takeover' = 'stop-button'): boolean {
+  /** The Stop button, and the funnel the hotkey and the sentinel reach too. */
+  stop(via: KillSwitch = 'stop-button'): boolean {
     if (!this.isRunning()) return false;
     this.current?.stop(via);
     return true;
   }
 
-  resolveGate(answer: 'approve' | 'deny' | 'stop'): boolean {
+  resolveGate(answer: GateAnswer): boolean {
     return this.current?.resolveGate(answer) ?? false;
   }
 

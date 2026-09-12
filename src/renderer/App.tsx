@@ -3,15 +3,17 @@ import { AnimatePresence, motion } from 'framer-motion';
 import { useBuddy } from './useBuddy.js';
 import { Hud } from './views/Hud.js';
 import { Home } from './views/Home.js';
+import { Notes } from './views/Notes.js';
 import { SettingsView } from './views/SettingsView.js';
 import { Logs } from './views/Logs.js';
 import { RunLog } from './views/RunLog.js';
 import { StatusDot, useMotionSafe } from './components/primitives.js';
 
-type Tab = 'home' | 'runs' | 'settings' | 'logs';
+type Tab = 'home' | 'notes' | 'runs' | 'settings' | 'logs';
 
 const TABS: { id: Tab; label: string }[] = [
   { id: 'home', label: 'Home' },
+  { id: 'notes', label: 'Notes' },
   { id: 'runs', label: 'Runs' },
   { id: 'settings', label: 'Settings' },
   { id: 'logs', label: 'Log' },
@@ -82,20 +84,26 @@ function Shell() {
               <Home
                 state={b.state}
                 stats={b.stats}
+                notesStats={b.notesStats}
+                spend={b.spend}
                 permissions={b.permissions}
                 sidecar={b.sidecar}
                 settings={b.settings}
-                frames={b.frames}
                 keepRate={b.keepRate}
                 scaleWarning={b.snapshot?.scaleWarning ?? null}
+                notesVersion={b.notesVersion}
+                onOpenNotes={() => setTab('notes')}
               />
             )}
+            {tab === 'notes' && <Notes version={b.notesVersion} />}
             {tab === 'runs' && <RunLog activeRun={b.run} />}
             {tab === 'settings' && (
               <SettingsView
                 settings={b.settings}
                 permissions={b.permissions}
                 sidecar={b.sidecar}
+                spend={b.spend}
+                notesStats={b.notesStats}
                 update={b.update}
               />
             )}

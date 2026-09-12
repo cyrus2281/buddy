@@ -13,12 +13,25 @@ import { operator } from './agent/orchestrator.js';
 import { runs } from './store/runs.js';
 import fs from 'node:fs';
 import path from 'node:path';
+import { notes, observations, relations, tasks } from './store/notes.js';
+import type { NotesEngine } from './notes/engine.js';
+import type { Activation } from './agent/activation.js';
 import type { CaptureScheduler } from './capture/scheduler.js';
-import { DEFAULT_BUDGETS, type Allowlist, type AppState, type DisplayInfo, type StartRunRequest } from '../shared/types.js';
+import {
+  DEFAULT_BUDGETS,
+  type Allowlist,
+  type AppState,
+  type DisplayInfo,
+  type NoteType,
+  type StartRunRequest,
+  type TaskScope,
+  type TaskStatus,
+} from '../shared/types.js';
 
-/** The allowlist a run starts from. M3 replaces this with `target_apps` from
- *  goal inference; until then the user confirms it in the HUD, which is the
- *  same keystroke either way (PRD §6.1). */
+/** The allowlist a run starts from when there is nothing to seed it with —
+ *  a typed goal, or an activation whose reading has not landed yet. When a
+ *  reading is available, `target_apps` replaces this and the user confirms the
+ *  app set in the same keystroke as the goal (PRD §6.1). */
 export const DEFAULT_ALLOWLIST: Allowlist = {
   apps: [
     'com.apple.Safari',
@@ -37,6 +50,8 @@ export const DEFAULT_ALLOWLIST: Allowlist = {
 
 interface Ctx {
   scheduler: CaptureScheduler;
+  engine: NotesEngine;
+  activation: Activation;
   getState: () => AppState;
   setState: (s: AppState) => void;
 }
@@ -94,6 +109,9 @@ export function registerIpc(ctx: Ctx) {
     hotkeyIssues,
     defaultBudgets: DEFAULT_BUDGETS,
     defaultAllowlist: DEFAULT_ALLOWLIST,
+    inference: ctx.activation.current(),
+    notesStats: ctx.engine.stats(),
+    spend: ctx.engine.spend.report(),
   });
 
   ipcMain.handle(CH.getSnapshot, snapshot);
@@ -187,6 +205,78 @@ export function registerIpc(ctx: Ctx) {
     }
   });
 
+  // ── M3 — the memory (PRD §4, §5, §8.3) ──────────────────────────────────
+
+  ipcMain.handle(CH.activate, () => ctx.activation.begin());
+  ipcMain.handle(CH.getInference, () => ctx.activation.current());
+
+  ipcMain.handle(CH.getNotes, (_e, type: NoteType, limit = 200) => notes.list(type, limit));
+  ipcMain.handle(CH.searchNotes, (_e, query: string, type?: NoteType) => notes.search(query, type));
+  ipcMain.handle(CH.getNoteDetail, (_e, id: number) => notes.detail(id));
+  ipcMain.handle(CH.updateNote, (_e, id: number, patch: { title?: string; body?: string }) => {
+    const n = notes.update(id, patch);
+    broadcast(CH.onNotesChanged, null);
+    return n;
+  });
+  ipcMain.handle(CH.deleteNote, (_e, id: number) => {
+    notes.delete(id);
+    broadcast(CH.onNotesChanged, null);
+    broadcast(CH.onNotesStats, ctx.engine.stats());
+  });
+  ipcMain.handle(CH.setTaskStatus, (_e, id: number, status: TaskStatus) => {
+    const t = tasks.setStatus(id, status);
+    broadcast(CH.onNotesChanged, null);
+    broadcast(CH.onNotesStats, ctx.engine.stats());
+    return t;
+  });
+  ipcMain.handle(CH.setTaskScope, (_e, id: number, scope: TaskScope) => {
+    const t = tasks.setScope(id, scope);
+    broadcast(CH.onNotesChanged, null);
+    return t;
+  });
+  ipcMain.handle(CH.getNotesStats, () => ctx.engine.stats());
+  ipcMain.handle(CH.getOpenTasks, () => tasks.open());
+  ipcMain.handle(CH.getObservations, (_e, limit = 50) => observations.recent(limit));
+  ipcMain.handle(CH.getTodayRecap, () => {
+    const start = new Date();
+    start.setHours(0, 0, 0, 0);
+    return (
+      notes
+        .list('recap', 50)
+        .find((n) => n.updatedAt >= start.getTime()) ?? null
+    );
+  });
+  ipcMain.handle(CH.getSpend, () => ctx.engine.spend.report());
+  ipcMain.handle(CH.resetSpend, () => {
+    ctx.engine.spend.resetToday();
+    return ctx.engine.spend.report();
+  });
+  ipcMain.handle(CH.observeNow, () => ctx.engine.maybeObserve('manual'));
+  ipcMain.handle(CH.rollupNow, () => {
+    const now = Date.now();
+    return ctx.engine.runRollup('manual', { from: now - 86_400_000, to: now });
+  });
+
+  /** The note detail view shows the frames a note came from, while they still
+   *  exist. Same confinement rule as `readFrame`, against the vault instead of
+   *  the runs directory — two checks rather than one widened one, because the
+   *  two directories have different lifetimes and widening is a one-character
+   *  mistake. */
+  ipcMain.handle(CH.readVaultFrame, (_e, p: string) => {
+    const root = paths.frames();
+    const resolved = path.resolve(p);
+    if (!resolved.startsWith(root + path.sep)) {
+      log.warn('ipc', 'refused a frame read outside the vault', { path: resolved });
+      return null;
+    }
+    try {
+      return `data:image/png;base64,${fs.readFileSync(resolved).toString('base64')}`;
+    } catch {
+      // Expired between the list and the read. The UI already knows how to say so.
+      return null;
+    }
+  });
+
   ipcMain.handle(CH.hideHud, () => hideHud());
   ipcMain.handle(CH.openHome, () => {
     createHome();
@@ -197,6 +287,15 @@ export function registerIpc(ctx: Ctx) {
   operator.on('step', (s) => broadcast(CH.onRunStep, s));
   operator.on('gate', (g) => broadcast(CH.onGate, g));
   operator.on('narration', (n) => broadcast(CH.onNarration, n));
+
+  ctx.activation.on('change', (st) => broadcast(CH.onInference, st));
+  ctx.engine.on('stats', (st) => broadcast(CH.onNotesStats, st));
+  ctx.engine.on('spend', (sp) => broadcast(CH.onSpend, sp));
+  ctx.engine.on('observation', () => broadcast(CH.onNotesStats, ctx.engine.stats()));
+  ctx.engine.on('rollup', () => {
+    broadcast(CH.onNotesChanged, null);
+    broadcast(CH.onNotesStats, ctx.engine.stats());
+  });
 
   // A run interrupted by a crash or a quit must not still read as running.
   runs.reconcileOnLaunch();

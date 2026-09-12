@@ -112,8 +112,31 @@ export interface Settings {
   hotkey: string;
   abortHotkey: string;
   paused: boolean;
+  /** PRD §7.1. Until this is on, `leashless` is not offered in the HUD and a
+   *  run that asks for it is refused. Turning it on is the deliberate act;
+   *  choosing it per run is then one click, which is the right shape — the
+   *  dangerous decision should be made once, calmly, in Settings. */
+  leashlessEnabled: boolean;
   exclusions: ExclusionRule[];
   reducedMotion: boolean;
+
+  // M3 — the Observer's upper tiers (PRD §5).
+  /** T2 cadence. PRD §5 says every 3 minutes. */
+  observeIntervalMs: number;
+  /** A context switch triggers T2 out of band, but not more often than this.
+   *  Without a floor, alt-tabbing between two windows would bill an observation
+   *  per switch and defeat the whole tiering. */
+  observeMinGapMs: number;
+  /** T3 cadence. Session end and midnight also trigger it. */
+  rollupIntervalMs: number;
+  /** A contiguous run of activity ends after this much idle (PRD §4.1). */
+  sessionIdleMs: number;
+  /** PRD R5. Hitting it pauses T2 and T3 for the rest of the day. It never
+   *  blocks goal inference or a run — those are things the user asked for. */
+  dailyCapUsd: number;
+  /** Turns off T2/T3 entirely, leaving capture and the typed-goal path. The
+   *  honest setting for someone who wants the Operator and not the memory. */
+  notesEnabled: boolean;
 }
 
 export interface SecretsStatus {
@@ -153,13 +176,27 @@ export const DEFAULT_SETTINGS: Settings = {
   hotkey: 'Alt+Command+Space',
   abortHotkey: 'Alt+Command+.',
   paused: false,
+  leashlessEnabled: false,
   reducedMotion: false,
+  observeIntervalMs: 180_000,
+  observeMinGapMs: 45_000,
+  rollupIntervalMs: 3_600_000,
+  sessionIdleMs: 600_000,
+  dailyCapUsd: 2.5,
+  notesEnabled: true,
   exclusions: [
     { label: '1Password', bundleId: 'com.1password.1password', builtin: true, enabled: true },
     { label: '1Password 7', bundleId: 'com.agilebits.onepassword7', builtin: true, enabled: true },
     { label: 'Keychain Access', bundleId: 'com.apple.keychainaccess', builtin: true, enabled: true },
     { label: 'Passwords', bundleId: 'com.apple.Passwords', builtin: true, enabled: true },
     { label: 'Private / Incognito windows', titlePattern: '(Private Browsing|Incognito)', builtin: true, enabled: true },
+    // Added after watching buddy observe a real machine: a billing page was on
+    // screen, and the observation it produced quoted the card's last four
+    // digits back. Nothing was doing anything wrong — §5.2 says plainly that
+    // frames go to a model — but a payment page is credential-adjacent in the
+    // same way a password manager is, and it is cheap to leave out. Disable it
+    // like any other rule if you want buddy to see checkout flows.
+    { label: 'Billing and payment pages', titlePattern: '(Billing|Payment|Checkout|Card details|Add a card)', builtin: true, enabled: true },
   ],
 };
 
@@ -168,8 +205,16 @@ export const DEFAULT_SETTINGS: Settings = {
 // ─────────────────────────────────────────────────────────────────────────────
 
 /** Decided before the loop starts and immutable for the run. A run cannot
- *  escalate its own permissions (PRD §6.1). */
-export type RunProfile = 'attended' | 'unattended';
+ *  escalate its own permissions (PRD §6.1).
+ *
+ *  `leashless` is unattended with every gate open — see PRD §7.1. It is off by
+ *  default, has to be turned on in Settings before the HUD will even offer it,
+ *  and is the one profile where buddy will send, delete, install, spend, and
+ *  type credentials without asking anyone. It exists because the user asked for
+ *  it to exist, knowing what it is. */
+export type RunProfile = 'attended' | 'unattended' | 'leashless';
+
+export const RUN_PROFILES: RunProfile[] = ['attended', 'unattended', 'leashless'];
 
 export type RunStatus =
   | 'confirming'
@@ -195,6 +240,15 @@ export type ActionClass =
 
 export type Decision = 'allow' | 'confirm' | 'deny';
 
+/** What the user said at a confirm gate.
+ *
+ *  `approve-session` is `approve` plus "and stop asking me about this kind of
+ *  action in this app for the rest of the run" — the answer to a task that
+ *  sends fifteen Slack messages and would otherwise ask fifteen times. Scoped
+ *  to the run, never persisted: a standing grant is config nobody maintains,
+ *  which is the thing PRD §6.1 argues against for allowlists. */
+export type GateAnswer = 'approve' | 'approve-session' | 'deny' | 'stop';
+
 export interface GuardVerdict {
   decision: Decision;
   class: ActionClass;
@@ -204,6 +258,11 @@ export interface GuardVerdict {
   signal: 'ax-tree' | 'app-domain' | 'keystroke-content' | 'action-kind';
   /** What the action targets, for the gate copy: "the Send button", "notion.so". */
   target: string;
+  /** The frontmost app's bundle id at dispatch time. Half of a session grant's
+   *  key: approving one Slack message must not pre-approve an email. */
+  appKey: string;
+  /** The same app in the user's words, for the grant's copy. */
+  appName: string;
 }
 
 export interface RunBudgets {
@@ -275,6 +334,13 @@ export interface PendingGate {
   stepIdx: number;
   action: string;
   verdict: GuardVerdict;
+  /** What "allow for the rest of this run" would cover, in the user's words:
+   *  "sending in Slack". Shown on the button, because a blanket grant whose
+   *  scope is not on its face is a blanket grant people click by accident. */
+  sessionScope: string;
+  /** How many times this exact grant has already been asked for. A second ask
+   *  is what makes "stop asking" worth offering. */
+  askedBefore: number;
 }
 
 export interface RunView {
@@ -295,6 +361,13 @@ export interface RunView {
   /** Live cache telemetry — a persistent zero means a silent invalidator
    *  (PRD §6.5). */
   cacheReadTokens: number;
+  /** How many times the user touched the keyboard or mouse during the run.
+   *  Recorded, never acted on: §7.3 makes stopping an explicit act. */
+  humanInputs: number;
+  /** Grants the user gave at a gate with "allow for the rest of this run",
+   *  in their display form. Shown in the HUD and the run log, because a
+   *  confirmation the user stopped seeing should still be visible somewhere. */
+  sessionGrants: string[];
 }
 
 export interface StartRunRequest {
@@ -304,4 +377,166 @@ export interface StartRunRequest {
   budgets?: Partial<RunBudgets>;
 }
 
-export type KillSwitch = 'hotkey' | 'sentinel' | 'human-takeover' | 'stop-button';
+/** PRD §7.3. Touching the keyboard is deliberately not one of these: stopping
+ *  a run is always an explicit act. See `killswitch.ts`. */
+export type KillSwitch = 'hotkey' | 'sentinel' | 'stop-button';
+
+// ─────────────────────────────────────────────────────────────────────────────
+// M3 — the Observer's memory (PRD §4, §5)
+// ─────────────────────────────────────────────────────────────────────────────
+
+export type NoteType = 'recap' | 'relation' | 'task';
+export type TaskStatus = 'open' | 'blocked' | 'waiting' | 'done';
+export type TaskScope = 'session' | 'day' | 'week';
+export type RelationKind = 'person' | 'app' | 'product' | 'customer' | 'tool';
+
+/** Which tier of the Observer spent the money. The spend meter is per-tier
+ *  because "observation cost ran away" (R5) and "one expensive run" are
+ *  different problems with different fixes. */
+export type SpendTier = 't2' | 't3' | 'inference' | 'operator' | 'wake-check';
+
+/** An entity T2 saw on screen. Raw material for T3's relation merge — not yet
+ *  deduped, and deliberately so: T2 is the cheap tier and should not be asked
+ *  to remember what it saw an hour ago. */
+export interface ObservedEntity {
+  kind: RelationKind;
+  name: string;
+  /** A handle, email, bundle id, ticket key — whatever makes it identifiable. */
+  identifier?: string;
+  detail?: string;
+}
+
+export interface ObservationRow {
+  id: number;
+  tsStart: number;
+  tsEnd: number;
+  summary: string;
+  apps: string[];
+  entities: ObservedEntity[];
+  confidence: number;
+  frameIds: number[];
+}
+
+export interface NoteRow {
+  id: number;
+  type: NoteType;
+  title: string;
+  body: string;
+  createdAt: number;
+  updatedAt: number;
+  salience: number;
+  sourceObs: number[];
+}
+
+export interface RelationRow extends NoteRow {
+  type: 'relation';
+  kind: RelationKind;
+  /** Canonical, normalized. Unique with `kind`. */
+  identifier: string;
+  displayName: string;
+  aliases: string[];
+  frequency: number;
+  lastSeenAt: number;
+}
+
+export interface TaskRow extends NoteRow {
+  type: 'task';
+  status: TaskStatus;
+  scope: TaskScope;
+  lastSeenAt: number;
+  nextCheckAt: number | null;
+  artifacts: string[];
+}
+
+export type AnyNote = NoteRow | RelationRow | TaskRow;
+
+/** A frame a note cites. `expired` is the interesting case: the note outlives
+ *  the screenshot by design (§5.1), and the UI has to say so rather than
+ *  showing a broken image. */
+export interface NoteFrameRef {
+  id: number;
+  ts: number;
+  appName: string;
+  windowTitle: string;
+  path: string | null;
+  expired: boolean;
+}
+
+export interface NoteDetail {
+  note: AnyNote;
+  linked: { note: AnyNote; kind: string }[];
+  frames: NoteFrameRef[];
+  observations: ObservationRow[];
+}
+
+export interface NoteSearchHit {
+  note: AnyNote;
+  /** FTS5 snippet with the match marked by «». */
+  snippet: string;
+}
+
+/** The live spend picture (PRD R5). One day, because the cap is daily. */
+export interface SpendReport {
+  day: string;
+  total: number;
+  byTier: Record<SpendTier, number>;
+  calls: number;
+  capUsd: number;
+  /** True once the cap is hit: T2 and T3 stop until tomorrow or until the cap
+   *  is raised. User-initiated work is never blocked by it. */
+  capped: boolean;
+  /** The seven most recent days, oldest first, for the sparkline. */
+  history: { day: string; total: number }[];
+}
+
+export interface NotesStats {
+  observations: number;
+  recaps: number;
+  relations: number;
+  tasks: number;
+  openTasks: number;
+  lastObservationAt: number | null;
+  lastRollupAt: number | null;
+  /** Null when no session is running (idle, paused, or never started). */
+  sessionStartedAt: number | null;
+}
+
+/** What the HUD shows while goal inference is in flight. The provisional goal
+ *  lands in ~200 ms from a local query; the reading takes 8.6 s median and up
+ *  to 22 s (PRD §6.7), which is why these are separate phases and not one. */
+export type InferencePhase = 'idle' | 'provisional' | 'ready' | 'error';
+
+export interface GoalAlternative {
+  goal: string;
+  confidence: number;
+}
+
+/** The structured reading, mirrored from `prompts/goal-inference.schema.ts`.
+ *  Duplicated here because this crosses the IPC boundary and the renderer has
+ *  no business importing zod. The two are pinned together by a check. */
+export interface GoalReading {
+  goal: string;
+  confidence: number;
+  alternatives: GoalAlternative[];
+  evidence: string[];
+  already_done: string[];
+  first_steps: string[];
+  proposed_profile: RunProfile;
+  risk_flags: string[];
+  target_apps: string[];
+  injection_notice: string | null;
+}
+
+export interface InferenceState {
+  phase: InferencePhase;
+  /** Always present from the first ~200 ms: the local guess, then the model's. */
+  goal: string | null;
+  /** Where the current goal came from, so the HUD can say "still reading…". */
+  source: 'task-note' | 'observation' | 'window-title' | 'model' | 'none';
+  reading: GoalReading | null;
+  error: string | null;
+  ms: number | null;
+  costUsd: number | null;
+  /** Bumped per activation so a stale response cannot overwrite a newer one. */
+  requestId: number;
+}

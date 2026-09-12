@@ -23,22 +23,62 @@ import type {
 
 // ─── The policy matrix (PRD §7.1) ────────────────────────────────────────────
 
+/**
+ * One table, three columns. Adding a profile is a column, not a second
+ * implementation — which is the property that made `leashless` a twelve-line
+ * change rather than a parallel code path with its own bugs.
+ *
+ * **`leashless` allows everything.** Not "allows more": every class, including
+ * the two that are `deny` under both other profiles. Under it buddy will send
+ * mail, delete files outside the scratch directory, install software, complete
+ * a purchase, and type an API key or a card number into a field — unattended,
+ * with nobody asked and nothing to approve.
+ *
+ * That is the feature, requested in those words. It is worth being exact about
+ * what it costs, because the two `deny` rows are not conservative defaults: a
+ * sent email cannot be recalled, a purchase cannot be un-bought, and a
+ * credential typed into the wrong field is a credential that has leaked. The
+ * guardrails in §7.2 are heuristics and defence in depth even when they are
+ * enforcing; with this column selected there is nothing between a wrong model
+ * reading and the machine except the kill switches and the budgets, both of
+ * which still apply.
+ *
+ * So the safety here is structural rather than in the table: it is off by
+ * default, it cannot be selected until `leashlessEnabled` is turned on in
+ * Settings, a run that asks for it without that is refused before the loop
+ * starts, and every step it takes is recorded under that profile in the run log.
+ * The dangerous decision is made once, deliberately, away from the keyboard —
+ * and after that it is one click, which is the right shape for something a
+ * person genuinely wants.
+ */
 const POLICY: Record<ActionClass, Record<RunProfile, Decision>> = {
-  //                          attended     unattended
-  read: { attended: 'allow', unattended: 'allow' },
-  type_editor: { attended: 'allow', unattended: 'allow' },
-  send: { attended: 'confirm', unattended: 'deny' },
-  purchase: { attended: 'deny', unattended: 'deny' },
-  credentials: { attended: 'deny', unattended: 'deny' },
-  delete: { attended: 'confirm', unattended: 'deny' },
-  install: { attended: 'confirm', unattended: 'deny' },
-  system_settings: { attended: 'confirm', unattended: 'deny' },
-  off_allowlist: { attended: 'confirm', unattended: 'deny' },
+  //                          attended       unattended      leashless
+  read:            { attended: 'allow',   unattended: 'allow', leashless: 'allow' },
+  type_editor:     { attended: 'allow',   unattended: 'allow', leashless: 'allow' },
+  send:            { attended: 'confirm', unattended: 'deny',  leashless: 'allow' },
+  purchase:        { attended: 'deny',    unattended: 'deny',  leashless: 'allow' },
+  credentials:     { attended: 'deny',    unattended: 'deny',  leashless: 'allow' },
+  delete:          { attended: 'confirm', unattended: 'deny',  leashless: 'allow' },
+  install:         { attended: 'confirm', unattended: 'deny',  leashless: 'allow' },
+  system_settings: { attended: 'confirm', unattended: 'deny',  leashless: 'allow' },
+  off_allowlist:   { attended: 'confirm', unattended: 'deny',  leashless: 'allow' },
+};
+
+/** Profiles that gate rather than allow outright, so the runner knows whether a
+ *  session grant could ever apply. Under `leashless` nothing gates, so there is
+ *  nothing to grant and the grant machinery never runs. */
+export const GATES_AT_ALL: Record<RunProfile, boolean> = {
+  attended: true,
+  unattended: true,
+  leashless: false,
 };
 
 /** `read` and `type_editor` are "allow if app allowlisted" under unattended.
  *  The allowlist check runs first and rewrites the class to `off_allowlist`,
- *  so the table itself stays a plain lookup. */
+ *  so the table itself stays a plain lookup. Under `leashless` the rewrite
+ *  still happens and `off_allowlist` still resolves to `allow` — the class is
+ *  recorded on the step either way, so the run log says which apps a leashless
+ *  run reached outside its own allowlist. */
 const ALLOWLIST_GATED: ActionClass[] = ['read', 'type_editor'];
 
 export function enforce(cls: ActionClass, profile: RunProfile): Decision {
@@ -261,6 +301,10 @@ export function classify(c: ClassifyInput): GuardVerdict {
     reason,
     signal,
     target: tgt,
+    // Carried on every verdict, allow or not: it is half the key of a session
+    // grant, and the run log's answer to "which app was this in".
+    appKey: target.bundleId || '',
+    appName: target.appName || target.bundleId || '',
   });
 
   // ── 1. AX tree ────────────────────────────────────────────────────────────

@@ -4,12 +4,15 @@ import type {
   AppState,
   CaptureStats,
   FrameRow,
+  InferenceState,
   LogEntry,
+  NotesStats,
   PendingGate,
   Permissions,
   RunView,
   Settings,
   SidecarStatus,
+  SpendReport,
 } from '../shared/types.js';
 
 declare global {
@@ -35,6 +38,12 @@ export function useBuddy() {
   const [run, setRun] = useState<RunView | null>(null);
   const [gate, setGate] = useState<PendingGate | null>(null);
   const [hotkeyIssues, setHotkeyIssues] = useState<{ label: string; accelerator: string }[]>([]);
+  const [inference, setInference] = useState<InferenceState | null>(null);
+  const [notesStats, setNotesStats] = useState<NotesStats | null>(null);
+  const [spend, setSpend] = useState<SpendReport | null>(null);
+  /** Bumped whenever a note changes anywhere, so every open list refetches
+   *  without each one having to subscribe to the specific thing that changed. */
+  const [notesVersion, setNotesVersion] = useState(0);
 
   useEffect(() => {
     let alive = true;
@@ -49,6 +58,9 @@ export function useBuddy() {
       setState(s.state);
       setRun(s.activeRun);
       setHotkeyIssues(s.hotkeyIssues);
+      setInference(s.inference);
+      setNotesStats(s.notesStats);
+      setSpend(s.spend);
       setGate(s.activeRun?.gate ?? null);
       setFrames(await api.getRecentFrames(60));
       setLogs(await api.getLogs(200));
@@ -76,6 +88,10 @@ export function useBuddy() {
       }),
       api.onGate(setGate),
       api.onHotkeyIssues(setHotkeyIssues),
+      api.onInference(setInference),
+      api.onNotesStats(setNotesStats),
+      api.onSpend(setSpend),
+      api.onNotesChanged(() => setNotesVersion((v) => v + 1)),
     ];
     return () => {
       alive = false;
@@ -92,7 +108,25 @@ export function useBuddy() {
     [stats],
   );
 
-  return { snapshot, stats, permissions, sidecar, settings, state, frames, logs, run, gate, hotkeyIssues, update, keepRate };
+  return {
+    snapshot,
+    stats,
+    permissions,
+    sidecar,
+    settings,
+    state,
+    frames,
+    logs,
+    run,
+    gate,
+    hotkeyIssues,
+    inference,
+    notesStats,
+    spend,
+    notesVersion,
+    update,
+    keepRate,
+  };
 }
 
 export function formatBytes(n: number): string {

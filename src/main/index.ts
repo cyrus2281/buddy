@@ -1,4 +1,4 @@
-import { app, Menu, Tray, nativeImage, dialog } from 'electron';
+import { app, Menu, Tray, nativeImage, dialog, powerMonitor } from 'electron';
 import path from 'node:path';
 import { log } from './log.js';
 import { paths } from './paths.js';
@@ -12,6 +12,8 @@ import { hotkeys } from './hotkey.js';
 import { broadcast, createHome, createHud, hideHud, setHudSticky, showHud, toggleHud, isHudVisible } from './windows.js';
 import { registerIpc, assertCoordinateScale, setHotkeyIssues } from './ipc.js';
 import { operator } from './agent/orchestrator.js';
+import { NotesEngine } from './notes/engine.js';
+import { Activation } from './agent/activation.js';
 import { CH } from '../shared/ipc.js';
 import type { AppState } from '../shared/types.js';
 
@@ -21,7 +23,12 @@ import type { AppState } from '../shared/types.js';
 
 let state: AppState = 'IDLE';
 let scheduler: CaptureScheduler;
+let engine: NotesEngine;
+let activation: Activation;
 let tray: Tray | null = null;
+/** The last T0 signal, so the provisional goal has a window title to fall back
+ *  on without waiting for a sidecar round trip on the hotkey path. */
+let lastFront = { bundleId: '', windowTitle: '' };
 
 function setState(next: AppState) {
   if (next === state) return;
@@ -119,7 +126,16 @@ async function main() {
   app.setActivationPolicy?.('accessory');
 
   scheduler = new CaptureScheduler(s);
-  registerIpc({ scheduler, getState: () => state, setState });
+  engine = new NotesEngine({ scheduler, settings: s });
+  activation = new Activation({
+    engine,
+    scheduler,
+    frontWindowTitle: () => lastFront.windowTitle,
+  });
+  scheduler.on('signal', (sig) => {
+    lastFront = { bundleId: sig.bundleId, windowTitle: sig.windowTitle };
+  });
+  registerIpc({ scheduler, engine, activation, getState: () => state, setState });
   createTray();
   createHud(); // built now so the hotkey is instant later
   // buddy's own clicks steal focus from the HUD constantly; blur must not
@@ -155,9 +171,11 @@ async function main() {
     // moment it does — without the user relaunching anything.
     if (p.screenRecording && !scheduler.isRunning() && !settings.get().paused) {
       scheduler.start();
+      if (settings.get().notesEnabled) engine.start();
       setState('OBSERVING');
     } else if (!p.screenRecording && scheduler.isRunning()) {
       scheduler.stop();
+      engine.stop();
       setState('IDLE');
       log.warn('app', 'Screen Recording was revoked; observation stopped');
     }
@@ -170,11 +188,24 @@ async function main() {
     updateTray();
   });
   scheduler.on('frame', (f) => broadcast(CH.onFrame, f));
+
+  // §4.1's other session boundary. `lock-screen` is included because a locked
+  // Mac is a Mac nobody is working at, even when the display stays awake.
+  powerMonitor.on('suspend', () => {
+    log.info('app', 'system suspended; ending the session');
+    engine.onSystemSleep();
+  });
+  powerMonitor.on('lock-screen', () => {
+    log.info('app', 'screen locked; ending the session');
+    engine.onSystemSleep();
+  });
+  powerMonitor.on('resume', () => log.info('app', 'system resumed'));
   // The tray menu is rebuilt on every state change, which is what keeps the
   // Stop item present for exactly as long as there is something to stop.
   operator.on('update', () => updateTray());
   settings.on('changed', (next) => {
     scheduler.updateSettings(next);
+    engine.updateSettings(next);
     bindHotkeys();
     broadcast(CH.onSettings, next);
     updateTray();
@@ -184,6 +215,7 @@ async function main() {
   const perms = await permissions.poll();
   if (perms.screenRecording && !s.paused) {
     scheduler.start();
+    if (s.notesEnabled) engine.start();
     setState('OBSERVING');
   } else {
     setState(s.paused ? 'PAUSED' : 'IDLE');
@@ -211,9 +243,14 @@ function bindHotkeys() {
           return;
         }
         if (isHudVisible()) {
+          activation.cancel('dismissed');
           hideHud();
           setState(scheduler.isRunning() ? 'OBSERVING' : 'IDLE');
         } else {
+          // §6.1 step 2: the provisional goal is computed *before* the window is
+          // shown, so the HUD's first paint already has it. It is one indexed
+          // SQLite read; the model call it kicks off lands seconds later.
+          activation.begin();
           showHudNow();
           setState('ARMED');
         }
@@ -226,6 +263,7 @@ function bindHotkeys() {
       accelerator: s.abortHotkey,
       handler: () => {
         log.warn('hotkey', 'abort pressed', { state });
+        activation.cancel('dismissed');
         if (operator.stop('hotkey')) {
           // Show the HUD rather than hiding it: the user needs to see that it
           // stopped and what it had done.
@@ -263,9 +301,14 @@ app.on('will-quit', async (e) => {
   e.preventDefault();
   log.info('app', 'shutting down');
   operator.stop('stop-button');
+  activation?.cancel('dismissed');
   hotkeys.unregisterAll();
   permissions.stop();
   retention.stop();
+  // Ends the session, which triggers a final rollup. It is fire-and-forget:
+  // blocking quit on a model call would make buddy feel wedged on exit, and
+  // the observations survive to be rolled up at next launch either way.
+  engine?.stop();
   scheduler?.stop();
   await sidecar.stop();
   closeDb();

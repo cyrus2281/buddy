@@ -22,6 +22,8 @@ import {
   type PendingGate,
   type RunBudgets,
   type RunOutcome,
+  type GateAnswer,
+  type KillSwitch,
   type RunStatus,
   type RunStep,
   type RunView,
@@ -58,6 +60,10 @@ const PRUNED_TEXT = '[screenshot pruned from context to save tokens — take a n
 /** The AX tree is generous; a pathological window should not eat the turn. */
 const MAX_TREE_CHARS = 12_000;
 
+/** A burst of typing is one event to a reader. §7.3's takeover note is
+ *  coalesced to at most one line per this many milliseconds. */
+const HUMAN_INPUT_COALESCE_MS = 5_000;
+
 export interface RunnerDeps {
   client: ModelClient;
   executor?: Executor;
@@ -83,12 +89,19 @@ export class AgentRunner extends EventEmitter {
   private status: RunStatus = 'running';
   private haltReason: string | null = null;
   private gate: PendingGate | null = null;
-  private gateResolver: ((v: 'approve' | 'deny' | 'stop') => void) | null = null;
+  private gateResolver: ((v: GateAnswer) => void) | null = null;
   private allowlist: Allowlist = { apps: [], domains: [] };
   private startedAt = Date.now();
   private endedAt: number | null = null;
   private goal = '';
   private profile: StartRunRequest['profile'] = 'attended';
+  private lastHumanInputAt = 0;
+  private humanInputCount = 0;
+  /** "Allow for the rest of this run", keyed by action class and app. */
+  private grants = new Map<string, string>();
+  /** How many times each grant key has been put to the user, so the second ask
+   *  is the one that offers to stop asking. */
+  private asked = new Map<string, number>();
 
   constructor(private deps: RunnerDeps) {
     super();
@@ -120,12 +133,14 @@ export class AgentRunner extends EventEmitter {
       haltReason: this.haltReason,
       gate: this.gate,
       cacheReadTokens: this.tracker.cacheReadTokens,
+      humanInputs: this.humanInputCount,
+      sessionGrants: [...this.grants.values()],
     };
   }
 
   /** The confirm gate's answer, from the HUD. `stop` is the third button: the
    *  user does not want this action *or* the run. */
-  resolveGate(answer: 'approve' | 'deny' | 'stop'): boolean {
+  resolveGate(answer: GateAnswer): boolean {
     if (!this.gateResolver) return false;
     const r = this.gateResolver;
     this.gateResolver = null;
@@ -135,8 +150,8 @@ export class AgentRunner extends EventEmitter {
     return true;
   }
 
-  /** Kill switch 4 (and the path kill switches 1–3 converge on). */
-  stop(via: 'stop-button' | 'hotkey' | 'sentinel' | 'human-takeover' = 'stop-button') {
+  /** The one path every kill switch converges on (PRD §7.3). */
+  stop(via: KillSwitch = 'stop-button') {
     this.kill.fire(via);
     // A run blocked on a confirm gate is not in the loop and will not notice a
     // kill switch on its own.
@@ -162,13 +177,20 @@ export class AgentRunner extends EventEmitter {
     });
     this.emitUpdate();
 
+    // §7.3: touching the keyboard does not stop a run. The tap is observational
+    // — it annotates the log so "why did that click land oddly" has an answer —
+    // so its absence is a missing log line, not a missing kill switch, and it
+    // is not raised to the user as though a safety control were gone.
+    //
+    // Subscribed unconditionally: whether a tap is actually running is the
+    // KillSwitches' business. If nothing ever arrives, nothing ever happens.
+    this.kill.on('human-input', this.onHumanInput);
     const armed = await this.kill.arm();
-    if (!armed.takeoverWatch) {
-      this.note(
-        'kill-switch',
-        `Human-takeover detection is unavailable (${armed.takeoverError}). ` +
-          'The hotkey, the ABORT file, and Stop still work.',
-      );
+    if (!armed.inputWatch) {
+      log.debug('agent', 'no input tap; the run log will not note takeovers', {
+        runId: this.runId,
+        error: armed.inputWatchError,
+      });
     }
 
     try {
@@ -218,6 +240,7 @@ export class AgentRunner extends EventEmitter {
       this.park('needs_human', `The run failed: ${(e as Error).message}`);
       log.error('agent', 'run threw', { runId: this.runId, error: (e as Error).message });
     } finally {
+      this.kill.off('human-input', this.onHumanInput);
       await this.kill.disarm();
       this.endedAt = Date.now();
       runs.finish(this.runId, this.status, this.tracker.usage().steps, this.tracker.usage().costUsd, this.outcome);
@@ -403,7 +426,34 @@ export class AgentRunner extends EventEmitter {
     });
 
     if (result.kind === 'gate') {
+      // Already granted for this run: re-dispatch without asking again. This is
+      // checked here rather than in the executor so the executor stays a pure
+      // classify-then-dispatch — the grant is a fact about this conversation
+      // with the user, not about the action.
+      const key = this.grantKey(result.verdict);
+      if (this.grants.has(key)) {
+        this.note(
+          'gate-granted',
+          `${describeAction(call.name, call.input, result.verdict)} — allowed under "${this.grants.get(key)}", which you approved earlier in this run.`,
+        );
+        return this.dispatchApproved(call);
+      }
+
       const answer = await this.askUser(call.name, result.verdict);
+      if (answer === 'approve-session') {
+        const scope = this.grantScope(result.verdict);
+        this.grants.set(key, scope);
+        log.warn('agent', 'session grant given at a confirm gate', {
+          runId: this.runId,
+          key,
+          scope,
+        });
+        this.note(
+          'gate-granted',
+          `You allowed ${scope} for the rest of this run. buddy will not ask again — it is still in the log, and Stop still works.`,
+        );
+        return this.dispatchApproved(call);
+      }
       if (answer === 'stop') {
         this.stop('stop-button');
         this.recordStep({
@@ -430,16 +480,20 @@ export class AgentRunner extends EventEmitter {
         );
         return { kind: 'halted' };
       }
-      // Approved: dispatch this exact block, once, without re-asking.
-      result = await this.executor.execute(call.name, call.input, {
-        runId: this.runId,
-        profile: this.profile,
-        allowlist: this.allowlist,
-        lastFrame: this.lastFrame,
-        preApproved: true,
-      });
+      // Approved once: dispatch this exact block, without re-asking.
+      return this.dispatchApproved(call);
     }
 
+    return this.finishDispatch(call, result);
+  }
+
+  /** Everything that happens to an outcome once no gate is outstanding. Shared
+   *  by the first dispatch and by the re-dispatch after an approval, so the two
+   *  cannot drift in how they record a step or park a run. */
+  private async finishDispatch(
+    call: ToolUse,
+    result: ExecOutcome,
+  ): Promise<{ kind: 'ok'; block: Anthropic.Messages.ContentBlockParam; isError: boolean } | { kind: 'halted' }> {
     if (result.kind === 'gate') {
       // `preApproved` was set, so the executor gating a second time means the
       // approval did not take. Park rather than loop: a gate the user cannot
@@ -507,6 +561,24 @@ export class AgentRunner extends EventEmitter {
   }
 
   /**
+   * Re-dispatch a gated block after the user approved it — once, and without
+   * asking again. Shared by the one-off approval and the session grant so there
+   * is a single re-dispatch path rather than two that can drift.
+   */
+  private async dispatchApproved(
+    call: ToolUse,
+  ): Promise<{ kind: 'ok'; block: Anthropic.Messages.ContentBlockParam; isError: boolean } | { kind: 'halted' }> {
+    const result = await this.executor.execute(call.name, call.input, {
+      runId: this.runId,
+      profile: this.profile,
+      allowlist: this.allowlist,
+      lastFrame: this.lastFrame,
+      preApproved: true,
+    });
+    return this.finishDispatch(call, result);
+  }
+
+  /**
    * The only place a `tool_result` is built.
    *
    * `toolset_name` is echoed from the `tool_use` block, which is the
@@ -526,8 +598,47 @@ export class AgentRunner extends EventEmitter {
 
   // ── The confirm gate ──────────────────────────────────────────────────────
 
-  private askUser(action: string, verdict: GuardVerdict): Promise<'approve' | 'deny' | 'stop'> {
-    this.gate = { runId: this.runId, stepIdx: this.stepIdx, action, verdict };
+  /**
+   * What a "for the rest of this run" grant covers.
+   *
+   * Class **and** app, never class alone. Approving one Slack message should
+   * not also pre-approve an email: those are both `send`, and a blanket grant on
+   * the class would quietly turn one deliberate yes into permission for a
+   * different irreversible thing in a different application. The app comes from
+   * the AX read at dispatch time, so it is what was actually frontmost rather
+   * than what the model believed.
+   */
+  private grantKey(verdict: GuardVerdict): string {
+    return `${verdict.class}@${verdict.appKey || 'unknown'}`;
+  }
+
+  private grantScope(verdict: GuardVerdict): string {
+    const what: Record<string, string> = {
+      send: 'sending',
+      delete: 'deleting',
+      install: 'installing',
+      system_settings: 'changing system settings',
+      off_allowlist: 'working',
+      read: 'reading',
+      type_editor: 'typing',
+      purchase: 'purchases',
+      credentials: 'credentials',
+    };
+    return `${what[verdict.class] ?? verdict.class} in ${verdict.appName || 'this app'}`;
+  }
+
+  private askUser(action: string, verdict: GuardVerdict): Promise<GateAnswer> {
+    const key = this.grantKey(verdict);
+    const askedBefore = this.asked.get(key) ?? 0;
+    this.asked.set(key, askedBefore + 1);
+    this.gate = {
+      runId: this.runId,
+      stepIdx: this.stepIdx,
+      action,
+      verdict,
+      sessionScope: this.grantScope(verdict),
+      askedBefore,
+    };
     this.status = 'gated';
     this.emit('gate', this.gate);
     this.emitUpdate();
@@ -535,6 +646,37 @@ export class AgentRunner extends EventEmitter {
       this.gateResolver = resolve;
     });
   }
+
+  // ── Human input, which is not a halt ──────────────────────────────────────
+
+  /**
+   * The user touched the keyboard or the mouse while buddy was working.
+   *
+   * This is recorded and surfaced, and it changes nothing about the run. Making
+   * it a kill switch meant a run died because someone scrolled to watch it, and
+   * a person who wants it to stop has three explicit ways to say so. What the
+   * note buys is the Run Log entry that explains an otherwise inexplicable
+   * step: buddy clicked where the button used to be, because the window moved
+   * under it.
+   *
+   * Coalesced to one note per quiet period — a burst of typing is one event to
+   * a reader, and thirty rows of "you pressed a key" would bury the actual run.
+   */
+  private onHumanInput = (p: { kind: string; t: number }) => {
+    const now = Date.now();
+    if (now - this.lastHumanInputAt < HUMAN_INPUT_COALESCE_MS) {
+      this.humanInputCount++;
+      return;
+    }
+    this.lastHumanInputAt = now;
+    this.humanInputCount++;
+    this.note(
+      'human-input',
+      `You used the ${p.kind === 'key' ? 'keyboard' : 'mouse'} while buddy was working. ` +
+        'It is still running — stop it with the abort hotkey or the Stop button.',
+    );
+    this.emit('human-input', { runId: this.runId, kind: p.kind, at: now });
+  };
 
   // ── Halting ───────────────────────────────────────────────────────────────
 
