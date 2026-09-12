@@ -365,22 +365,37 @@ Risk flags needed explicit per-flag definitions. Left loose (*"flag what the tas
 
 ## 7. Guardrails
 
-Both profiles ship in v1. They share one enforcement point and differ only in a policy table, so the second profile is a data change, not a second implementation.
+Three profiles ship in v1. They share one enforcement point and differ only in a policy table, so each additional profile is a column rather than a second implementation.
 
 ### 7.1 Policy
 
-| Action class | Attended | Unattended |
-|---|---|---|
-| Screenshot, scroll, navigate, read | allow | allow — allowlisted apps + domains only |
-| Type into editor / doc / non-submitting field | allow | allow if app allowlisted |
-| Send message, email, post, comment, PR | **confirm** | **deny → `needs_human`** |
-| Purchase, payment, checkout | **deny** | **deny** |
-| Credentials, passwords, 2FA, API keys | **deny** | **deny** |
-| Delete outside `~/.buddy/scratch` | **confirm** | **deny → `needs_human`** |
-| Install software, change system settings | **confirm** | **deny** |
-| Open an app or domain not on the list | **confirm** | **deny → `needs_human`** |
+| Action class | Attended | Unattended | Leashless |
+|---|---|---|---|
+| Screenshot, scroll, navigate, read | allow | allow — allowlisted apps + domains only | allow |
+| Type into editor / doc / non-submitting field | allow | allow if app allowlisted | allow |
+| Send message, email, post, comment, PR | **confirm** | **deny → `needs_human`** | allow |
+| Purchase, payment, checkout | **deny** | **deny** | allow |
+| Credentials, passwords, 2FA, API keys | **deny** | **deny** | allow |
+| Delete outside `~/.buddy/scratch` | **confirm** | **deny → `needs_human`** | allow |
+| Install software, change system settings | **confirm** | **deny** | allow |
+| Open an app or domain not on the list | **confirm** | **deny → `needs_human`** | allow |
 
 A deny **parks the run**. buddy never routes around it, never looks for an alternate path to the same effect, and never asks the model how to proceed past it. `needs_human` is a terminal state with a notification and a preserved log.
+
+#### Leashless, and what it costs
+
+`leashless` allows **everything** — not "more than unattended", but every class, including the two that are `deny` under both other profiles. Under it buddy will send mail, delete files outside the scratch directory, install software, complete a purchase, and type an API key or a card number into a field: unattended, with nobody asked and nothing to approve.
+
+That is the feature, requested in those words. It is worth being exact about the price, because those two `deny` rows are not timid defaults. A sent email cannot be recalled, a purchase cannot be un-bought, and a credential typed into the wrong field is a credential that has leaked. The §7.2 signals are heuristics and defence in depth even when they are enforcing; with this column selected there is nothing between a wrong model reading and the machine except the kill switches and the budgets — both of which do still apply.
+
+The safety here is therefore structural rather than in the table:
+
+- It is **off by default** and cannot be selected until `leashlessEnabled` is turned on in Settings.
+- A run requesting it without that flag is **refused in `orchestrator.start()` before the loop begins** — not only in the HUD, because a guard that lives in a button is not a guard.
+- It is **never buddy's own suggestion**; goal inference does not propose it.
+- Every step taken under it is **recorded against that profile in the run log**.
+
+The dangerous decision is made once, deliberately, away from the keyboard, and after that it is one click — the right shape for something a person genuinely wants. The reversibility question in §6.7 is what the other two columns are built on; this column is the user electing to stop asking it.
 
 ### 7.2 Enforcement point
 
