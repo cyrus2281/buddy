@@ -58,6 +58,7 @@ export const CH = {
   // main → renderer (send)
   onStats: 'buddy:stats',
   onFrame: 'buddy:frame',
+  onFramesPurged: 'buddy:framesPurged',
   onPermissions: 'buddy:permissions',
   onSidecar: 'buddy:sidecar',
   onSettings: 'buddy:settings',
@@ -82,6 +83,16 @@ export interface RunSummary {
   steps: number;
   costUsd: number;
   outcome: unknown;
+}
+
+/** What a purge removed. Mirrors the main process's `PurgeReport`, declared
+ *  here so the renderer never imports across the main-process boundary. */
+export interface PurgeSummary {
+  expiredFrames: number;
+  orphanFiles: number;
+  emptyDirs: number;
+  staleStaging: number;
+  ranAt: number;
 }
 
 /** Everything the renderer needs on mount, in one round trip. */
@@ -148,6 +159,9 @@ export interface BuddyApi {
 
   onStats(fn: (s: CaptureStats) => void): () => void;
   onFrame(fn: (f: FrameRow) => void): () => void;
+  /** Fires after any retention sweep or manual purge, so a view holding a list
+   *  of frames knows its thumbnails now point at unlinked files. */
+  onFramesPurged(fn: (r: PurgeSummary) => void): () => void;
   onPermissions(fn: (p: Permissions) => void): () => void;
   onSidecar(fn: (s: SidecarStatus) => void): () => void;
   onSettings(fn: (s: Settings) => void): () => void;

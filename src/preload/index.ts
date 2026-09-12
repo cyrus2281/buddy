@@ -46,6 +46,7 @@ const api: BuddyApi = {
 
   onStats: (fn) => subscribe(CH.onStats, fn),
   onFrame: (fn) => subscribe(CH.onFrame, fn),
+  onFramesPurged: (fn) => subscribe(CH.onFramesPurged, fn),
   onPermissions: (fn) => subscribe(CH.onPermissions, fn),
   onSidecar: (fn) => subscribe(CH.onSidecar, fn),
   onSettings: (fn) => subscribe(CH.onSettings, fn),

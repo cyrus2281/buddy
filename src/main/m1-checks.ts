@@ -218,6 +218,30 @@ function run() {
     return last.msg;
   });
 
+  check('every purge path notifies listeners so the UI can re-read', () => {
+    const seen: string[] = [];
+    const off = retention.onSweep(() => seen.push('fired'));
+
+    frames.keep({
+      ts: Date.now() - 3 * 86_400_000, displayId: 1, stagingPath: stage('notify-old.png'),
+      w: 10, h: 10, bundleId: 'x', appName: 'x', windowTitle: '',
+      phash: 'dddddddddddddddd', retentionDays: 1,
+    });
+    retention.sweep();
+    eq(seen.length, 1, 'the hourly/manual sweep notifies');
+
+    frames.keep({
+      ts: Date.now(), displayId: 1, stagingPath: stage('notify-live.png'),
+      w: 10, h: 10, bundleId: 'x', appName: 'x', windowTitle: '',
+      phash: 'eeeeeeeeeeeeeeee', retentionDays: 1,
+    });
+    retention.purgeAll();
+    eq(seen.length, 2, 'Delete-all notifies through the same hook');
+
+    off();
+    return 'sweep() and purgeAll() both reach onSweep listeners';
+  });
+
   check('purgeAll removes every live frame', () => {
     frames.keep({
       ts: Date.now(), displayId: 1, stagingPath: stage('z.png'), w: 10, h: 10,

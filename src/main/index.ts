@@ -129,7 +129,13 @@ async function main() {
   // Retention runs before capture starts: a machine that was asleep overnight
   // should not accumulate a second day of frames before the first sweep.
   retention.start();
-  retention.onSweep(() => scheduler.refreshDiskStats());
+  retention.onSweep((report) => {
+    scheduler.refreshDiskStats();
+    // Any view holding a list of frames is now showing thumbnails whose PNGs
+    // have been unlinked. This fires for the hourly sweep as much as for the
+    // Delete-all button, so a grid left open overnight does not rot.
+    broadcast(CH.onFramesPurged, report);
+  });
 
   try {
     await sidecar.start();

@@ -61,6 +61,12 @@ export function useBuddy() {
       api.onSettings(setSettings),
       api.onState(setState),
       api.onFrame((f) => setFrames((prev) => [f, ...prev].slice(0, 60))),
+      // A purge tombstones rows and unlinks files, so the list has to be re-read
+      // rather than filtered locally — refetching is the only thing that is
+      // right for both "deleted everything" and "the hourly sweep took four".
+      api.onFramesPurged(() => {
+        void api.getRecentFrames(60).then(setFrames);
+      }),
       api.onLog((e) => setLogs((prev) => [...prev, e].slice(-200))),
       // The run view carries the gate, so a gate cleared by another window (or
       // by a kill switch) disappears here too rather than lingering.
