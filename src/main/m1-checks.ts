@@ -234,12 +234,17 @@ function run() {
 
   const failed = results.filter((r) => !r.ok);
   const pad = Math.max(...results.map((r) => r.name.length));
-  process.stdout.write('\nM1 checks\n\n');
-  for (const r of results) {
-    process.stdout.write(`  ${r.ok ? '✓' : '✗'}  ${r.name.padEnd(pad)}   ${r.detail}\n`);
-  }
-  process.stdout.write(`\n${results.length - failed.length}/${results.length} passed\n\n`);
-  app.exit(failed.length === 0 ? 0 : 1);
+  const report =
+    '\nM1 checks\n\n' +
+    results.map((r) => `  ${r.ok ? '✓' : '✗'}  ${r.name.padEnd(pad)}   ${r.detail}\n`).join('') +
+    `\n${results.length - failed.length}/${results.length} passed\n\n`;
+
+  // `app.exit()` here waits on Electron's network-service teardown, which took
+  // ~229s on a run where the checks themselves finished in 13ms. Write the
+  // report synchronously to fd 1 (process.exit truncates pending async writes
+  // on a pipe) and then leave immediately.
+  fs.writeSync(1, report);
+  process.exit(failed.length === 0 ? 0 : 1);
 
 }
 
