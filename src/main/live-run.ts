@@ -39,9 +39,11 @@ import { paths } from './paths.js';
 import { log } from './log.js';
 import { openDb, closeDb } from './store/db.js';
 import { settings } from './settings.js';
+import { anthropicBaseUrl } from './providers.js';
 import { sidecar } from './sidecar/supervisor.js';
 import { AgentRunner } from './agent/runner.js';
-import { AnthropicClient, OPERATOR_MODEL, type ModelClient, type ModelResponse } from './agent/client.js';
+import { AnthropicClient, type ModelClient, type ModelResponse } from './agent/client.js';
+import { anthropicModel } from './notes/model.js';
 import { buildTools } from './agent/tools.js';
 import { killSwitches } from './agent/killswitch.js';
 import { sealTranscript } from './agent/context.js';
@@ -164,7 +166,7 @@ async function main() {
   const front = await sidecar.frontmost();
   fs.writeSync(1, `  frontmost at start: ${front.appName} (${front.bundleId})\n`);
 
-  const observed = new ObservedClient(new AnthropicClient(key));
+  const observed = new ObservedClient(new AnthropicClient(key, anthropicBaseUrl()));
   const runner = new AgentRunner({ client: observed, killSwitches });
 
   const gates: PendingGate[] = [];
@@ -190,7 +192,7 @@ async function main() {
     );
   });
 
-  fs.writeSync(1, `\nLive run — ${OPERATOR_MODEL}\n  ${a} + ${b} = ${expected}\n  ${file}\n\n`);
+  fs.writeSync(1, `\nLive run — ${anthropicModel('operator')}\n  ${a} + ${b} = ${expected}\n  ${file}\n\n`);
 
   const view = await runner.run({
     goal: TASK,
@@ -287,9 +289,9 @@ async function main() {
 
   // The only test that counts: send it to the API.
   try {
-    const probe = new AnthropicClient(key);
+    const probe = new AnthropicClient(key, anthropicBaseUrl());
     const res = await probe.create({
-      model: OPERATOR_MODEL,
+      model: anthropicModel('operator'),
       max_tokens: 1_024,
       system: [{ type: 'text', text: 'Answer in one short sentence.' }],
       tools: buildTools(),

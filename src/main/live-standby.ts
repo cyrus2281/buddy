@@ -31,6 +31,7 @@ import { paths } from './paths.js';
 import { log } from './log.js';
 import { openDb, closeDb } from './store/db.js';
 import { settings } from './settings.js';
+import { anthropicBaseUrl } from './providers.js';
 import { secrets } from './secrets.js';
 import { sidecar } from './sidecar/supervisor.js';
 import { runs } from './store/runs.js';
@@ -175,7 +176,7 @@ async function main() {
     operator,
     spend,
     // The real Haiku client, not a scripted one. This is the whole point.
-    client: () => new AnthropicStructuredClient(key),
+    client: () => new AnthropicStructuredClient(key, anthropicBaseUrl()),
     settings: () => settings.get(),
   });
   standby.on('checked', (e: { met: boolean; why: string; attempt: number }) =>

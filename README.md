@@ -217,6 +217,18 @@ with the *same sentence* `orchestrator.start()` throws. One message, one author:
 the UI cannot end up disagreeing with the guard about why the hotkey is
 unavailable.
 
+**Every provider is addressable, and its models are named rather than
+compiled in.** Settings carries a base URL for Anthropic and OpenAI as well as
+for the local runtime, plus a model id per Anthropic role — Operator, T2, T3,
+goal inference, Q&A, and the standby check. Blank means the first-party host and
+the first-party id, which the field shows as its placeholder. The two halves go
+together on purpose: a gateway that fronts the Messages API usually renames the
+models too, and a base URL on its own would reach the gateway and 404 on every
+call. Spend is priced by the first-party id found *inside* the name, so
+`anthropic.claude-sonnet-5-v1:0` still meters — which matters because
+`dailyCapUsd` is a safety control, and a cap where every call costs $0 is a cap
+that is off.
+
 ## What M4 verifies
 
 `npm run check:m4` runs 41 checks against the real modules, with the same one

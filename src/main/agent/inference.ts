@@ -5,7 +5,7 @@ import { log } from '../log.js';
 import { getDb } from '../store/db.js';
 import { notes, observations, relations, tasks } from '../store/notes.js';
 import { downscaleFrame } from '../notes/downscale.js';
-import { INFERENCE_MODEL, type ContentBlock, type StructuredClient } from '../notes/model.js';
+import { anthropicModel, type ContentBlock, type StructuredClient } from '../notes/model.js';
 import { GoalInferenceSchema, type GoalInference } from '../../../prompts/goal-inference.schema.js';
 import { renderBundle, type ContextBundle, type Frame } from '../../../prompts/context-bundle.js';
 import type { T0Signal } from '../capture/scheduler.js';
@@ -195,7 +195,7 @@ export async function inferGoal(
   signal?: AbortSignal,
 ): Promise<InferenceOutcome> {
   const res = await client.parse<GoalInference>({
-    model: INFERENCE_MODEL,
+    model: anthropicModel('inference'),
     system: inferenceSystemPrompt(),
     content: renderBundle(bundle) as ContentBlock[],
     schema: GoalInferenceSchema,

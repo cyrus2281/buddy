@@ -3,6 +3,7 @@ import { log } from '../log.js';
 import { secrets } from '../secrets.js';
 import { observations, notes, tasks } from '../store/notes.js';
 import { AnthropicStructuredClient, type StructuredClient } from './model.js';
+import { anthropicBaseUrl } from '../providers.js';
 import { newFramesSince, observe, type ObserverFrame } from './observer.js';
 import { rollup, type RollupReason } from './rollup.js';
 import { SessionTracker } from './session.js';
@@ -48,6 +49,10 @@ export class NotesEngine extends EventEmitter {
   private settings: Settings;
   private scheduler: CaptureScheduler;
   private injectedClient: StructuredClient | null;
+  /** The client this engine built for itself, kept apart from an injected one
+   *  so rebuilding it cannot throw away a scripted client the checks rely on. */
+  private builtClient: { client: StructuredClient; key: string; baseUrl: string | null } | null =
+    null;
   private now: () => number;
 
   private observeTimer: NodeJS.Timeout | null = null;
@@ -292,19 +297,27 @@ export class NotesEngine extends EventEmitter {
   // ── Wiring ───────────────────────────────────────────────────────────────
 
   /** Null when there is no key: the Observer is silently off rather than
-   *  logging a failure every three minutes on a machine with no key in it. */
+   *  logging a failure every three minutes on a machine with no key in it.
+   *
+   *  Rebuilt when the key or the endpoint changes, rather than cached for the
+   *  life of the process: a base URL typed into Settings that only takes effect
+   *  after a relaunch is a setting that looks broken the one time anyone
+   *  changes it. */
   client(): StructuredClient | null {
     if (this.injectedClient) return this.injectedClient;
     const key = secrets.get('anthropic');
     if (!key) return null;
-    this.injectedClient = new AnthropicStructuredClient(key);
-    return this.injectedClient;
+    const baseUrl = anthropicBaseUrl();
+    if (!this.builtClient || this.builtClient.key !== key || this.builtClient.baseUrl !== baseUrl) {
+      this.builtClient = { client: new AnthropicStructuredClient(key, baseUrl), key, baseUrl };
+    }
+    return this.builtClient.client;
   }
 
-  /** Called when the key changes, so a key added in Settings takes effect
-   *  without a relaunch. */
+  /** Drops the built client outright. `client()` already notices a changed key
+   *  or endpoint; this is for a caller that wants the next call to start clean. */
   resetClient() {
-    this.injectedClient = null;
+    this.builtClient = null;
   }
 
   stats(): NotesStats {

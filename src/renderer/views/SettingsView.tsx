@@ -2,7 +2,9 @@ import React, { useEffect, useState } from 'react';
 import { api } from '../useBuddy.js';
 import { Button, Card, Field, NumberInput, StatusDot, Toggle } from '../components/primitives.js';
 import { PermissionsPanel } from './Permissions.js';
+import { ANTHROPIC_DEFAULT_MODELS } from '../../shared/types.js';
 import type {
+  AnthropicRole,
   NotesStats,
   OperatorAvailability,
   Permissions,
@@ -764,8 +766,9 @@ function ProviderPanel({
         {operator?.available ? (
           <>
             <span className="font-medium">The hotkey can take over the machine.</span> Computer use
-            runs on Claude Opus 5 with <span className="font-mono">computer_toolset_20260801</span>,
-            whatever the two dropdowns below are set to.
+            runs on <span className="font-mono">{modelId(settings, 'operator')}</span> with{' '}
+            <span className="font-mono">computer_toolset_20260801</span>, whatever the two dropdowns
+            below are set to.
           </>
         ) : (
           <>
@@ -795,41 +798,150 @@ function ProviderPanel({
       </div>
 
       {(settings.observerProvider === 'openai' || settings.qaProvider === 'openai') && (
-        <Field label="OpenAI model" hint="Needs vision if it is doing the observing.">
-          <input
-            value={settings.openaiModel}
-            onChange={(e) => void update({ openaiModel: e.target.value })}
-            spellCheck={false}
-            className="w-64 rounded-lg border border-ink-700 bg-ink-900 px-2.5 py-1.5 font-mono
-                       text-[12px] text-fog-100 outline-none focus:border-ember-500/70"
-          />
-        </Field>
+        <div className="grid gap-4 sm:grid-cols-2">
+          <Field label="OpenAI endpoint" hint="Blank means api.openai.com/v1. Set it for Azure or a gateway that speaks the same /chat/completions route.">
+            <MonoInput
+              value={settings.openaiBaseUrl}
+              placeholder={DEFAULT_OPENAI_BASE_URL}
+              onChange={(v) => void update({ openaiBaseUrl: v })}
+            />
+          </Field>
+          <Field label="OpenAI model" hint="Needs vision if it is doing the observing.">
+            <MonoInput
+              value={settings.openaiModel}
+              placeholder="gpt-5"
+              onChange={(v) => void update({ openaiModel: v })}
+            />
+          </Field>
+        </div>
       )}
 
       {(settings.observerProvider === 'local' || settings.qaProvider === 'local') && (
         <div className="grid gap-4 sm:grid-cols-2">
           <Field label="Local endpoint" hint="OpenAI-compatible. Ollama serves this at /v1.">
-            <input
+            <MonoInput
               value={settings.localBaseUrl}
-              onChange={(e) => void update({ localBaseUrl: e.target.value })}
-              spellCheck={false}
-              className="w-full rounded-lg border border-ink-700 bg-ink-900 px-2.5 py-1.5 font-mono
-                         text-[12px] text-fog-100 outline-none focus:border-ember-500/70"
+              placeholder="http://localhost:11434/v1"
+              onChange={(v) => void update({ localBaseUrl: v })}
             />
           </Field>
           <Field label="Local model" hint="A vision model, if it is doing the observing — a text-only one sees nothing.">
-            <input
+            <MonoInput
               value={settings.localModel}
-              onChange={(e) => void update({ localModel: e.target.value })}
-              spellCheck={false}
-              className="w-full rounded-lg border border-ink-700 bg-ink-900 px-2.5 py-1.5 font-mono
-                         text-[12px] text-fog-100 outline-none focus:border-ember-500/70"
+              placeholder="llama3.2-vision"
+              onChange={(v) => void update({ localModel: v })}
             />
           </Field>
         </div>
       )}
+
+      <div className="grid gap-4 border-t border-ink-700/60 pt-4 sm:grid-cols-2">
+        <Field
+          label="Anthropic endpoint"
+          hint="Blank means api.anthropic.com. Point it at a gateway or proxy that speaks the Messages API and every Claude call goes there — the Operator's included."
+        >
+          <MonoInput
+            value={settings.anthropicBaseUrl}
+            placeholder="https://api.anthropic.com"
+            onChange={(v) => void update({ anthropicBaseUrl: v })}
+          />
+        </Field>
+      </div>
+
+      {/* Six fields rather than one, because the tiering is economic: T2 runs
+          every three minutes and the Operator runs at effort:high, and one
+          shared id would either bankrupt the cheap tier or lobotomise the
+          expensive one. Folded away because the defaults are right for
+          api.anthropic.com, and only a gateway that renames things needs them. */}
+      <details className="border-t border-ink-700/60 pt-3">
+        <summary className="cursor-pointer text-[12px] font-medium text-fog-100">
+          Anthropic model ids
+          <span className="ml-2 text-[11px] font-normal text-fog-500">
+            one per role — blank runs the id shown
+          </span>
+        </summary>
+        <div className="mt-3 grid gap-4 sm:grid-cols-2">
+          {ANTHROPIC_ROLE_FIELDS.map(({ role, label, hint }) => (
+            <Field key={role} label={label} hint={hint}>
+              <MonoInput
+                value={settings.anthropicModels?.[role] ?? ''}
+                placeholder={ANTHROPIC_DEFAULT_MODELS[role]}
+                onChange={(v) =>
+                  void update({ anthropicModels: { ...settings.anthropicModels, [role]: v } })
+                }
+              />
+            </Field>
+          ))}
+        </div>
+        <p className="mt-3 text-[11px] leading-relaxed text-fog-500">
+          Spend is priced by the first-party id found inside the name, so{' '}
+          <span className="font-mono">anthropic.claude-sonnet-5-v1:0</span> still meters correctly. A
+          wholly renamed model reports $0, which also means it cannot trip the daily cap.
+        </p>
+      </details>
     </Card>
   );
+}
+
+/** Blank is not a value here — it means "the default", and the placeholder says
+ *  which default that is. Rewriting a cleared box to its default on the spot
+ *  would make the field impossible to retype into. */
+function MonoInput({
+  value,
+  placeholder,
+  onChange,
+}: {
+  value: string;
+  placeholder?: string;
+  onChange: (v: string) => void;
+}) {
+  return (
+    <input
+      value={value}
+      placeholder={placeholder}
+      onChange={(e) => onChange(e.target.value)}
+      spellCheck={false}
+      className="w-full rounded-lg border border-ink-700 bg-ink-900 px-2.5 py-1.5 font-mono
+                 text-[12px] text-fog-100 outline-none placeholder:text-fog-600
+                 focus:border-ember-500/70"
+    />
+  );
+}
+
+const DEFAULT_OPENAI_BASE_URL = 'https://api.openai.com/v1';
+
+/** What each Anthropic role actually does, in the words someone editing a model
+ *  id needs — "T2" on its own is not a hint, it is a cross-reference. */
+const ANTHROPIC_ROLE_FIELDS: { role: AnthropicRole; label: string; hint: string }[] = [
+  {
+    role: 'operator',
+    label: 'Driving the machine',
+    hint: 'Computer use. Only a model that takes computer_toolset_20260801 can do this one.',
+  },
+  {
+    role: 'observe',
+    label: 'Observing (T2)',
+    hint: 'Screenshots every few minutes. The cheap tier, and the one that decides the bill.',
+  },
+  { role: 'rollup', label: 'Summarising (T3)', hint: 'The hourly recap, relations, and task states.' },
+  {
+    role: 'inference',
+    label: 'Goal inference',
+    hint: 'Reads the Context Bundle when you press the hotkey and proposes the goal.',
+  },
+  { role: 'qa', label: 'Answering questions', hint: 'Ask-about-my-day. Notes as text, no images.' },
+  {
+    role: 'wake',
+    label: 'Standby checks',
+    hint: 'One screenshot and a sentence, repeatedly, while a run waits for something.',
+  },
+];
+
+/** The id a role will actually run: the override if there is one, the
+ *  first-party default otherwise. Same rule as `anthropicModel()` in the main
+ *  process, and it has to stay the same or the banner lies. */
+function modelId(s: Settings, role: AnthropicRole): string {
+  return s.anthropicModels?.[role]?.trim() || ANTHROPIC_DEFAULT_MODELS[role];
 }
 
 function ProviderSelect({

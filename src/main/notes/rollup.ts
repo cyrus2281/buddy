@@ -2,7 +2,7 @@ import { log } from '../log.js';
 import { notes, relations, tasks } from '../store/notes.js';
 import { RollupSchema, type RollupOutput } from './schemas.js';
 import { ROLLUP_SYSTEM } from './prompts.js';
-import { ROLLUP_MODEL, type ContentBlock, type StructuredClient } from './model.js';
+import { anthropicModel, type ContentBlock, type StructuredClient } from './model.js';
 import type { ObservationRow, RelationRow, TaskRow } from '../../shared/types.js';
 
 /// T3 — the rollup tier (PRD §5).
@@ -119,7 +119,7 @@ export async function rollup(
   ];
 
   const res = await client.parse<RollupOutput>({
-    model: ROLLUP_MODEL,
+    model: anthropicModel('rollup'),
     system: ROLLUP_SYSTEM,
     content,
     schema: RollupSchema,

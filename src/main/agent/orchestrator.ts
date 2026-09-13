@@ -7,7 +7,7 @@ import { AnthropicClient, type ModelClient } from './client.js';
 import { killSwitches } from './killswitch.js';
 import { AgentRunner, type ResumeRunRequest } from './runner.js';
 import type { Executor } from './executor.js';
-import { NO_ANTHROPIC_KEY } from '../providers.js';
+import { NO_ANTHROPIC_KEY, anthropicBaseUrl } from '../providers.js';
 import type { GateAnswer, KillSwitch, PendingGate, RunStep, RunView, StartRunRequest } from '../../shared/types.js';
 
 /// One run at a time, and one place that knows which.
@@ -72,7 +72,7 @@ export class Operator extends EventEmitter {
           // shows the user exactly this, so the Settings screen and the guard
           // cannot disagree about why activation is unavailable (§9.1).
           if (!key) throw new Error(NO_ANTHROPIC_KEY);
-          return new AnthropicClient(key);
+          return new AnthropicClient(key, anthropicBaseUrl());
         })();
 
     // §7.1: leashless has no allowlist. Cleared here as well as in the HUD, for
@@ -115,7 +115,7 @@ export class Operator extends EventEmitter {
       : (() => {
           const key = secrets.get('anthropic');
           if (!key) throw new Error(NO_ANTHROPIC_KEY);
-          return new AnthropicClient(key);
+          return new AnthropicClient(key, anthropicBaseUrl());
         })();
 
     const runner = this.attach(this.build(client));

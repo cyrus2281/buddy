@@ -161,11 +161,48 @@ export interface Settings {
   qaProvider: ProviderId;
   /** The model id used when `openai` is selected. */
   openaiModel: string;
+  /** Where the OpenAI provider POSTs. Configurable for the same reason
+   *  `anthropicBaseUrl` is: an Azure deployment or a gateway speaks the same
+   *  `/chat/completions` route from a different host. Blank falls back to
+   *  `https://api.openai.com/v1`. */
+  openaiBaseUrl: string;
   /** OpenAI-compatible endpoint for a local runtime (Ollama's is
    *  http://localhost:11434/v1). */
   localBaseUrl: string;
   localModel: string;
+  /** Where the Anthropic SDK points. Blank means the SDK's own default,
+   *  `https://api.anthropic.com`; set it to put every Claude call — the
+   *  Operator's included — through a gateway or proxy that speaks the Messages
+   *  API. A gateway that renames the models needs `anthropicModels` too. */
+  anthropicBaseUrl: string;
+  /** Per-role model id overrides for the Anthropic path. Blank or missing
+   *  means the first-party id in `ANTHROPIC_DEFAULT_MODELS`, so a stored value
+   *  from before this existed still resolves to what it used to run. */
+  anthropicModels: Partial<Record<AnthropicRole, string>>;
 }
+
+/** The six things buddy asks Claude to do, each on its own model.
+ *
+ *  They are separate settings rather than one "Anthropic model" because the
+ *  tiering is economic: T2 runs every three minutes and the Operator runs at
+ *  `effort: high` with adaptive thinking, and collapsing those onto one id
+ *  either bankrupts the cheap tier or lobotomises the expensive one. See
+ *  `main/notes/model.ts` for what each default is and why. */
+export type AnthropicRole = 'operator' | 'observe' | 'rollup' | 'qa' | 'inference' | 'wake';
+
+/** The first-party ids. Lives here rather than in `main/notes/model.ts` so the
+ *  Settings screen can show each field's fallback as its placeholder — a blank
+ *  box that silently means `claude-haiku-4-5` is a worse control than one that
+ *  says so. `model.ts` re-exports these under their per-tier names, with the
+ *  reasoning attached. */
+export const ANTHROPIC_DEFAULT_MODELS: Record<AnthropicRole, string> = {
+  operator: 'claude-opus-5',
+  observe: 'claude-haiku-4-5',
+  rollup: 'claude-sonnet-5',
+  qa: 'claude-sonnet-5',
+  inference: 'claude-opus-5',
+  wake: 'claude-haiku-4-5',
+};
 
 export interface SecretsStatus {
   encryptionAvailable: boolean;
@@ -233,8 +270,11 @@ export const DEFAULT_SETTINGS: Settings = {
   observerProvider: 'anthropic',
   qaProvider: 'anthropic',
   openaiModel: 'gpt-5',
+  openaiBaseUrl: 'https://api.openai.com/v1',
   localBaseUrl: 'http://localhost:11434/v1',
   localModel: 'llama3.2-vision',
+  anthropicBaseUrl: '',
+  anthropicModels: {},
   exclusions: [
     { label: '1Password', bundleId: 'com.1password.1password', builtin: true, enabled: true },
     { label: '1Password 7', bundleId: 'com.agilebits.onepassword7', builtin: true, enabled: true },

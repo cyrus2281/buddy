@@ -630,6 +630,18 @@ here, so the conversion normalises it.
 The wake check stays Anthropic-only, and deliberately: it is the one cheap-tier
 call whose output is a decision to **take the machine**.
 
+**The host and the model ids are settings for every provider, not just the local
+one.** Anthropic and OpenAI each carry a base URL — blank meaning the
+first-party host — and the Anthropic path carries a model id per role (Operator,
+T2, T3, goal inference, Q&A, wake check). The roles stay separate because the
+tiering is economic rather than cosmetic: one shared id either bankrupts the
+tier that runs every three minutes or lobotomises the one that drives the
+machine. A gateway is the case this is for, and a gateway normally renames the
+models as well as moving the host, so a base URL without the ids would reach it
+and 404. The spend meter prices a renamed model by the first-party id contained
+in its name, because R5's daily cap is a safety control and an unpriced model
+would silently switch it off.
+
 ---
 
 ## 10. Milestones

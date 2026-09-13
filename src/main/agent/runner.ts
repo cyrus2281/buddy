@@ -14,7 +14,8 @@ import {
   buildTools,
   isComputerAction,
 } from './tools.js';
-import { OPERATOR_MODEL, type ModelClient } from './client.js';
+import { type ModelClient } from './client.js';
+import { anthropicModel } from '../notes/model.js';
 import { runContext } from './context.js';
 import {
   DEFAULT_BUDGETS,
@@ -471,7 +472,7 @@ export class AgentRunner extends EventEmitter {
       this.applyRollingCacheBreakpoint();
 
       const res = await this.deps.client.create({
-        model: OPERATOR_MODEL,
+        model: anthropicModel('operator'),
         max_tokens: MAX_TOKENS,
         system,
         tools,

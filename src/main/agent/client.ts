@@ -1,5 +1,6 @@
 import Anthropic from '@anthropic-ai/sdk';
 import { log } from '../log.js';
+import { OPERATOR_MODEL } from '../notes/model.js';
 import type { UsageLike } from './budget.js';
 
 /// The model call, behind an interface.
@@ -20,7 +21,10 @@ export interface ModelClient {
   create(params: Anthropic.Messages.MessageCreateParamsNonStreaming): Promise<ModelResponse>;
 }
 
-export const OPERATOR_MODEL = 'claude-opus-5';
+/** Re-exported from `notes/model.ts`, where every Anthropic default now lives
+ *  beside its price and its override. The import path stays what it was because
+ *  the loop and the live-run script both read it from here. */
+export { OPERATOR_MODEL };
 
 /**
  * Streams, per PRD §6.5. `max_tokens: 64000` with `thinking: adaptive` puts a
@@ -31,8 +35,14 @@ export const OPERATOR_MODEL = 'claude-opus-5';
 export class AnthropicClient implements ModelClient {
   private client: Anthropic;
 
-  constructor(apiKey: string) {
-    this.client = new Anthropic({ apiKey, maxRetries: 3 });
+  /** A blank base URL means the SDK's default host, not a relative request —
+   *  same rule as `AnthropicStructuredClient`. */
+  constructor(apiKey: string, baseUrl?: string | null) {
+    this.client = new Anthropic({
+      apiKey,
+      maxRetries: 3,
+      ...(baseUrl?.trim() ? { baseURL: baseUrl.trim() } : {}),
+    });
   }
 
   async create(params: Anthropic.Messages.MessageCreateParamsNonStreaming): Promise<ModelResponse> {

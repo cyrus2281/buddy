@@ -4,14 +4,13 @@ import { secrets } from './secrets.js';
 import { settings } from './settings.js';
 import {
   AnthropicStructuredClient,
-  OBSERVER_MODEL,
-  QA_MODEL,
-  ROLLUP_MODEL,
+  anthropicModel,
   costOfCall,
   type StructuredClient,
   type StructuredRequest,
   type StructuredResult,
 } from './notes/model.js';
+import { DEFAULT_SETTINGS } from '../shared/types.js';
 import type {
   OperatorAvailability,
   ProviderCapabilities,
@@ -65,6 +64,24 @@ const NOTE: Record<ProviderId, string> = {
     'text-only one will return nothing useful about a screenshot. Nothing leaves the machine.',
 };
 
+/**
+ * Where each provider's requests go.
+ *
+ * Every provider is addressable now, not just the local one. The case is the
+ * same in all three: a gateway, an Azure deployment, a corporate proxy that
+ * terminates TLS and wants the traffic to look like its own — the API is the
+ * API, and the host is deployment configuration rather than a property of the
+ * provider. Blank means the first-party default, which for Anthropic is the
+ * SDK's own (returned as null so the SDK keeps owning that string).
+ */
+export function anthropicBaseUrl(): string | null {
+  return settings.get().anthropicBaseUrl.trim() || null;
+}
+
+export function openaiBaseUrl(): string {
+  return settings.get().openaiBaseUrl.trim() || DEFAULT_SETTINGS.openaiBaseUrl;
+}
+
 export function isConfigured(id: ProviderId): boolean {
   const s = settings.get();
   if (id === 'anthropic') return secrets.has('anthropic');
@@ -74,7 +91,13 @@ export function isConfigured(id: ProviderId): boolean {
 
 export function modelsFor(id: ProviderId): { observe: string; rollup: string; qa: string } {
   const s = settings.get();
-  if (id === 'anthropic') return { observe: OBSERVER_MODEL, rollup: ROLLUP_MODEL, qa: QA_MODEL };
+  if (id === 'anthropic') {
+    return {
+      observe: anthropicModel('observe'),
+      rollup: anthropicModel('rollup'),
+      qa: anthropicModel('qa'),
+    };
+  }
   if (id === 'openai') return { observe: s.openaiModel, rollup: s.openaiModel, qa: s.openaiModel };
   return { observe: s.localModel, rollup: s.localModel, qa: s.localModel };
 }
@@ -278,7 +301,11 @@ export function clientFor(role: 'observe' | 'rollup' | 'qa'): {
   if (id === 'anthropic') {
     const key = secrets.get('anthropic');
     if (!key) return null;
-    return { client: new AnthropicStructuredClient(key), provider: id, model };
+    return {
+      client: new AnthropicStructuredClient(key, anthropicBaseUrl()),
+      provider: id,
+      model,
+    };
   }
   if (id === 'openai') {
     const key = secrets.get('openai');
@@ -288,7 +315,7 @@ export function clientFor(role: 'observe' | 'rollup' | 'qa'): {
     }
     return {
       client: new OpenAICompatibleClient({
-        baseUrl: 'https://api.openai.com/v1',
+        baseUrl: openaiBaseUrl(),
         apiKey: key,
         label: 'OpenAI',
       }),

@@ -44,7 +44,7 @@ import { notes, observations, tasks } from './store/notes.js';
 import { settings } from './settings.js';
 import { secrets } from './secrets.js';
 import { SpendMeter } from './notes/spend.js';
-import { costOfCall, WAKE_CHECK_MODEL, QA_MODEL } from './notes/model.js';
+import { anthropicModel, costOfCall, WAKE_CHECK_MODEL, QA_MODEL } from './notes/model.js';
 import type { StructuredClient, StructuredRequest, StructuredResult } from './notes/model.js';
 import { OBSERVER_MAX_LONG_EDGE, OBSERVER_MAX_PIXELS, observerScale } from './notes/downscale.js';
 import { ASK_SYSTEM, askAboutMyDay, renderNotes, fts5Search } from './notes/ask.js';
@@ -64,11 +64,15 @@ import type Anthropic from '@anthropic-ai/sdk';
 import {
   CAPABILITIES,
   NO_ANTHROPIC_KEY,
+  anthropicBaseUrl,
+  modelsFor,
+  openaiBaseUrl,
   operatorAvailability,
   providerStatuses,
   zodToStrictJsonSchema,
 } from './providers.js';
 import {
+  ANTHROPIC_DEFAULT_MODELS,
   DEFAULT_SETTINGS,
   type Allowlist,
   type ProviderId,
@@ -1281,6 +1285,51 @@ async function run() {
       'and OpenAI’s says so in the words a confused user needs',
     );
     return '§9.1’s matrix is a value the UI prints, not a table someone retyped';
+  });
+
+  await check('the endpoint and the model ids are configuration, not constants', () => {
+    // The case this exists for: a gateway in front of the Messages API, which
+    // renames the models as well as moving the host. Half the change — a base
+    // URL with the first-party ids still hard-coded — reaches the gateway and
+    // 404s on every call, so both halves are asserted together.
+    eq(anthropicBaseUrl(), null, 'nothing configured means the SDK owns its own default host');
+    eq(openaiBaseUrl(), DEFAULT_SETTINGS.openaiBaseUrl, 'and OpenAI falls back to api.openai.com');
+    eq(
+      anthropicModel('observe'),
+      ANTHROPIC_DEFAULT_MODELS.observe,
+      'and every role runs its first-party id',
+    );
+
+    settings.update({
+      anthropicBaseUrl: ' https://gateway.internal/anthropic ',
+      openaiBaseUrl: 'https://contoso.openai.azure.com/v1',
+      anthropicModels: { observe: 'anthropic.claude-haiku-4-5-v1:0', rollup: '  ' },
+    });
+    eq(anthropicBaseUrl(), 'https://gateway.internal/anthropic', 'a configured host is used, trimmed');
+    eq(openaiBaseUrl(), 'https://contoso.openai.azure.com/v1', 'for OpenAI too');
+    eq(anthropicModel('observe'), 'anthropic.claude-haiku-4-5-v1:0', 'the override is what T2 sends');
+    eq(
+      anthropicModel('rollup'),
+      ANTHROPIC_DEFAULT_MODELS.rollup,
+      'a blank field means the default rather than an empty model id',
+    );
+    eq(modelsFor('anthropic').observe, anthropicModel('observe'), 'and Settings prints the same id');
+
+    // `dailyCapUsd` is a safety control (PRD R5), so a renamed model that
+    // priced at zero would not merely under-report — it would switch the cap
+    // off. The first-party id inside the name is enough to price it.
+    const renamed = costOfCall('anthropic.claude-haiku-4-5-v1:0', {
+      input_tokens: 1_000_000,
+      output_tokens: 0,
+    });
+    near(renamed, 1, 1e-9, 'a gateway-renamed Haiku still costs Haiku money');
+
+    settings.update({
+      anthropicBaseUrl: DEFAULT_SETTINGS.anthropicBaseUrl,
+      openaiBaseUrl: DEFAULT_SETTINGS.openaiBaseUrl,
+      anthropicModels: {},
+    });
+    return 'host and model id are both settings, and the meter survives a renamed model';
   });
 
   await check('a non-Anthropic provider’s output is validated by the same schema', () => {

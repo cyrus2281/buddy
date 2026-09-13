@@ -5,7 +5,7 @@ import { phashDistance } from '../capture/phash.js';
 import { downscaleFrame } from './downscale.js';
 import { ObserveSchema, type ObserveOutput } from './schemas.js';
 import { OBSERVE_SYSTEM } from './prompts.js';
-import { OBSERVER_MODEL, type ContentBlock, type StructuredClient } from './model.js';
+import { anthropicModel, type ContentBlock, type StructuredClient } from './model.js';
 import type { T0Signal } from '../capture/scheduler.js';
 import type { ObservationRow } from '../../shared/types.js';
 
@@ -190,7 +190,7 @@ export async function observe(
   content.push({ type: 'text', text: '</frames>\n\nWrite the observation.' });
 
   const res = await client.parse<ObserveOutput>({
-    model: OBSERVER_MODEL,
+    model: anthropicModel('observe'),
     system: OBSERVE_SYSTEM,
     content,
     schema: ObserveSchema,

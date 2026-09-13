@@ -2,6 +2,8 @@ import Anthropic from '@anthropic-ai/sdk';
 import { zodOutputFormat } from '@anthropic-ai/sdk/helpers/zod';
 import type { z } from 'zod';
 import { log } from '../log.js';
+import { settings } from '../settings.js';
+import { ANTHROPIC_DEFAULT_MODELS, type AnthropicRole } from '../../shared/types.js';
 import type { UsageLike } from '../agent/budget.js';
 
 /// The Observer's model calls, behind one interface.
@@ -24,15 +26,23 @@ export const MODEL_PRICES: Record<string, { input: number; output: number }> = {
   'claude-opus-5': { input: 5 / 1_000_000, output: 25 / 1_000_000 },
 };
 
+/// The per-tier defaults. Each is what buddy runs unless Settings names
+/// something else — a gateway that fronts the Messages API under its own model
+/// ids (Bedrock's `anthropic.claude-*`, LiteLLM's aliases) needs the id to be a
+/// setting, and the tier's *reasoning* is what belongs here rather than in a
+/// text field.
+
 /** T2. Haiku 4.5's image ceiling is why observer frames are downscaled
  *  separately from the Operator's — see `downscale.ts`. */
-export const OBSERVER_MODEL = 'claude-haiku-4-5';
+export const OBSERVER_MODEL = ANTHROPIC_DEFAULT_MODELS.observe;
 /** T3. Cheap enough to run hourly, good enough to merge entities sensibly. */
-export const ROLLUP_MODEL = 'claude-sonnet-5';
+export const ROLLUP_MODEL = ANTHROPIC_DEFAULT_MODELS.rollup;
 /** Goal inference. Measured at ~$0.024 and 8.6 s median per activation (§6.7). */
-export const INFERENCE_MODEL = 'claude-opus-5';
+export const INFERENCE_MODEL = ANTHROPIC_DEFAULT_MODELS.inference;
 /** M4. Ask-about-my-day: FTS5 hits plus the notes, no images (PRD §9). */
-export const QA_MODEL = 'claude-sonnet-5';
+export const QA_MODEL = ANTHROPIC_DEFAULT_MODELS.qa;
+/** M2. Computer use, `effort: high`, adaptive thinking (PRD §6.5). */
+export const OPERATOR_MODEL = ANTHROPIC_DEFAULT_MODELS.operator;
 /**
  * M4. The standby condition check (PRD §6.6).
  *
@@ -43,15 +53,43 @@ export const QA_MODEL = 'claude-sonnet-5';
  * cent, which is what makes "check every five minutes, all afternoon" a feature
  * rather than a bill.
  */
-export const WAKE_CHECK_MODEL = 'claude-haiku-4-5';
+export const WAKE_CHECK_MODEL = ANTHROPIC_DEFAULT_MODELS.wake;
+
+/**
+ * The model id for one role, as configured.
+ *
+ * Read at the call site rather than captured once, so a model changed in
+ * Settings takes effect on the next observation instead of on the next launch —
+ * the same rule `resetClient()` follows for a key. A blank field falls back to
+ * the first-party id, which is what makes clearing the box a way to undo rather
+ * than a way to send `model: ""` to a gateway.
+ */
+export function anthropicModel(role: AnthropicRole): string {
+  return settings.get().anthropicModels?.[role]?.trim() || ANTHROPIC_DEFAULT_MODELS[role];
+}
 
 /** Models we have already said we cannot price. Latched so an unpriced model —
  *  a local one, which genuinely costs nothing — does not produce a warning
  *  every three minutes for the rest of the day. */
 const unpriced = new Set<string>();
 
+/** Exact id first, then a contained first-party id.
+ *
+ *  The second half is for gateways: `anthropic.claude-sonnet-5-v1:0` is Sonnet 5
+ *  at Sonnet 5's price, and pricing it at zero would not just under-report the
+ *  meter — `dailyCapUsd` is a safety control (PRD R5), and a cap that never
+ *  trips because every call costs $0 is a cap that is off. */
+function priceOf(model: string): { input: number; output: number } | undefined {
+  const exact = MODEL_PRICES[model];
+  if (exact) return exact;
+  for (const [id, price] of Object.entries(MODEL_PRICES)) {
+    if (model.includes(id)) return price;
+  }
+  return undefined;
+}
+
 export function costOfCall(model: string, usage: UsageLike): number {
-  const p = MODEL_PRICES[model];
+  const p = priceOf(model);
   if (!p) {
     if (!unpriced.has(model)) {
       unpriced.add(model);
@@ -101,8 +139,15 @@ export interface StructuredClient {
 export class AnthropicStructuredClient implements StructuredClient {
   private client: Anthropic;
 
-  constructor(apiKey: string) {
-    this.client = new Anthropic({ apiKey, maxRetries: 2 });
+  /** `baseURL` is omitted rather than defaulted when nothing is configured: the
+   *  SDK's own default is the one place that should know what it is, and an
+   *  empty string passed through would produce a request to a relative URL. */
+  constructor(apiKey: string, baseUrl?: string | null) {
+    this.client = new Anthropic({
+      apiKey,
+      maxRetries: 2,
+      ...(baseUrl?.trim() ? { baseURL: baseUrl.trim() } : {}),
+    });
   }
 
   async parse<T>(req: StructuredRequest<T>): Promise<StructuredResult<T>> {

@@ -7,7 +7,7 @@ import { notify as defaultNotify } from '../notify.js';
 import { runPaths, runs, type WakeupRow } from '../store/runs.js';
 import { sidecar } from '../sidecar/supervisor.js';
 import { downscaleFrame } from '../notes/downscale.js';
-import { WAKE_CHECK_MODEL, type StructuredClient } from '../notes/model.js';
+import { anthropicModel, type StructuredClient } from '../notes/model.js';
 import { runContext } from './context.js';
 import type { SpendMeter } from '../notes/spend.js';
 import type { Operator } from './orchestrator.js';
@@ -304,7 +304,7 @@ export class StandbyManager extends EventEmitter {
 
     try {
       const res = await client.parse<WakeCheckOutput>({
-        model: WAKE_CHECK_MODEL,
+        model: anthropicModel('wake'),
         system: WAKE_CHECK_SYSTEM,
         content: [
           {
