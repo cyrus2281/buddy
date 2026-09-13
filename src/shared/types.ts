@@ -137,12 +137,44 @@ export interface Settings {
   /** Turns off T2/T3 entirely, leaving capture and the typed-goal path. The
    *  honest setting for someone who wants the Operator and not the memory. */
   notesEnabled: boolean;
+
+  // M4 — standby, the allowlists, the budgets, and the providers (PRD §6.6, §8.6, §9.1).
+  /** Apps a run may touch when goal inference has not seeded the list. Editable
+   *  in Settings; `target_apps` still overrides it per run (PRD §6.1). */
+  allowlistApps: string[];
+  /** Hostnames, matched on suffix so `notion.so` covers `www.notion.so`. */
+  allowlistDomains: string[];
+  /** The profile the HUD starts on when inference proposes nothing. Never
+   *  `leashless`: §7.1 says buddy never suggests it, and a default is a
+   *  suggestion made once and then forgotten. */
+  defaultProfile: Exclude<RunProfile, 'leashless'>;
+  budgetMaxSteps: number;
+  budgetMaxWallClockMs: number;
+  budgetMaxCostUsd: number;
+  /** How often the standby manager looks for a due wakeup. A poll rather than a
+   *  timer per wakeup, because a Mac that sleeps for two hours does not fire the
+   *  timers it slept through (PRD §6.6). */
+  wakePollMs: number;
+  /** Which provider serves T2/T3. Anthropic unless the user changes it. */
+  observerProvider: ProviderId;
+  /** Which provider answers "what did I do this morning?". */
+  qaProvider: ProviderId;
+  /** The model id used when `openai` is selected. */
+  openaiModel: string;
+  /** OpenAI-compatible endpoint for a local runtime (Ollama's is
+   *  http://localhost:11434/v1). */
+  localBaseUrl: string;
+  localModel: string;
 }
 
 export interface SecretsStatus {
   encryptionAvailable: boolean;
   anthropic: boolean;
   openai: boolean;
+  /** Keys that are stored but will not decrypt — almost always because the app
+   *  was re-signed since they were saved. Surfaced so the UI can say what to do
+   *  rather than showing a stored key that nothing can read. */
+  undecryptable: ('anthropic' | 'openai')[];
 }
 
 export interface SidecarStatus {
@@ -184,6 +216,25 @@ export const DEFAULT_SETTINGS: Settings = {
   sessionIdleMs: 600_000,
   dailyCapUsd: 2.5,
   notesEnabled: true,
+  allowlistApps: [
+    'com.apple.Safari',
+    'com.google.Chrome',
+    'com.apple.TextEdit',
+    'com.apple.Notes',
+    'com.apple.finder',
+    'com.microsoft.VSCode',
+  ],
+  allowlistDomains: [],
+  defaultProfile: 'attended',
+  budgetMaxSteps: 60,
+  budgetMaxWallClockMs: 10 * 60_000,
+  budgetMaxCostUsd: 2.0,
+  wakePollMs: 15_000,
+  observerProvider: 'anthropic',
+  qaProvider: 'anthropic',
+  openaiModel: 'gpt-5',
+  localBaseUrl: 'http://localhost:11434/v1',
+  localModel: 'llama3.2-vision',
   exclusions: [
     { label: '1Password', bundleId: 'com.1password.1password', builtin: true, enabled: true },
     { label: '1Password 7', bundleId: 'com.agilebits.onepassword7', builtin: true, enabled: true },
@@ -368,6 +419,10 @@ export interface RunView {
    *  in their display form. Shown in the HUD and the run log, because a
    *  confirmation the user stopped seeing should still be visible somewhere. */
   sessionGrants: string[];
+  /** How many times this run has come back from standby (PRD §6.6). Zero on a
+   *  first attempt. The budgets restart on each resume, so this is what makes
+   *  the run row's cumulative steps and cost explicable. */
+  resumes: number;
 }
 
 export interface StartRunRequest {
@@ -393,7 +448,7 @@ export type RelationKind = 'person' | 'app' | 'product' | 'customer' | 'tool';
 /** Which tier of the Observer spent the money. The spend meter is per-tier
  *  because "observation cost ran away" (R5) and "one expensive run" are
  *  different problems with different fixes. */
-export type SpendTier = 't2' | 't3' | 'inference' | 'operator' | 'wake-check';
+export type SpendTier = 't2' | 't3' | 'inference' | 'operator' | 'wake-check' | 'qa';
 
 /** An entity T2 saw on screen. Raw material for T3's relation merge — not yet
  *  deduped, and deliberately so: T2 is the cheap tier and should not be asked
@@ -539,4 +594,94 @@ export interface InferenceState {
   costUsd: number | null;
   /** Bumped per activation so a stale response cannot overwrite a newer one. */
   requestId: number;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// M4 — standby, the Timeline, providers, and ask-about-my-day (PRD §6.6, §8.4, §9)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** PRD §9.1. Exactly one of these has `computerUse`, and the UI has to say so
+ *  rather than letting someone configure OpenAI and wonder why the hotkey is
+ *  greyed out. */
+export type ProviderId = 'anthropic' | 'openai' | 'local';
+
+export interface ProviderCapabilities {
+  /** `computer_toolset_20260801` and an equivalent. Anthropic only, and this is
+   *  not a gap waiting to be filled — there is no equivalent elsewhere. */
+  computerUse: boolean;
+  /** Images in, which T2, goal inference, and the wake check all require. */
+  vision: boolean;
+  /** Schema-constrained output. Every tier buddy has depends on it. */
+  structuredOutput: boolean;
+  /** Cheap enough to run every three minutes all day. */
+  cheapBulk: boolean;
+}
+
+export interface ProviderStatus {
+  id: ProviderId;
+  label: string;
+  capabilities: ProviderCapabilities;
+  /** Whether a key (or, for a local runtime, an endpoint) is configured. */
+  configured: boolean;
+  /** One sentence for the UI when this provider cannot do something. */
+  note: string;
+  /** What the provider would actually be asked to run, per role. */
+  models: { observe: string; rollup: string; qa: string };
+}
+
+/** The state of the Operator's availability, so Settings and the HUD say the
+ *  same thing `orchestrator.start()` would throw (PRD §9.1). */
+export interface OperatorAvailability {
+  available: boolean;
+  /** Null when available; otherwise the exact sentence to show the user. */
+  reason: string | null;
+}
+
+/** A scheduled standby check (PRD §6.6), as the UI sees it. */
+export interface WakeupView {
+  id: number;
+  runId: number;
+  goal: string;
+  fireAt: number;
+  condition: string;
+  intervalS: number;
+  attempts: number;
+  maxAttempts: number;
+  /** The run's status, so a wakeup whose run was deleted or parked is visible
+   *  as such rather than as a pending check that will never resolve. */
+  runStatus: RunStatus;
+}
+
+/** What one cheap check decided. Recorded as a run step so the Run Log shows
+ *  the waiting as well as the working (PRD §8.5). */
+export interface WakeCheckResult {
+  met: boolean;
+  why: string;
+  costUsd: number;
+  ms: number;
+}
+
+/** A day in the Timeline (PRD §8.4). */
+export interface TimelineDay {
+  /** `YYYY-MM-DD`, local time — the same key the frame vault's directories use. */
+  day: string;
+  frames: number;
+  bytes: number;
+  /** When the newest frame of this day expires. The countdown §8.4 asks for. */
+  expiresAt: number;
+  apps: { bundleId: string; appName: string; count: number }[];
+}
+
+/** An answer to "what did I do this morning?" (PRD §9, ask-about-my-day).
+ *  v1 is FTS5 + the notes into context; swapping in RAG is a `NoteSearch`
+ *  implementation change and nothing else. */
+export interface DayAnswer {
+  question: string;
+  answer: string;
+  /** The notes the answer drew on, so it can be checked rather than believed. */
+  cited: { id: number; type: NoteType; title: string }[];
+  costUsd: number;
+  ms: number;
+  provider: ProviderId;
+  model: string;
 }

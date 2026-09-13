@@ -67,6 +67,15 @@ const CLAMPS: Partial<Record<keyof Settings, [number, number]>> = {
   rollupIntervalMs: [600_000, 21_600_000],
   sessionIdleMs: [60_000, 3_600_000],
   dailyCapUsd: [0, 50],
+  // M4. The budget floors are not preferences either: a run with zero steps is
+  // a run that cannot take its opening screenshot, and a user who typed 0 into
+  // a number field meant "small", not "broken".
+  budgetMaxSteps: [1, 500],
+  budgetMaxWallClockMs: [30_000, 7_200_000],
+  budgetMaxCostUsd: [0.05, 50],
+  // A one-second poll would hammer SQLite for a feature whose unit is minutes;
+  // ten minutes would make a five-minute wakeup fire late by half its interval.
+  wakePollMs: [2_000, 120_000],
 };
 
 class SettingsStore extends EventEmitter {
@@ -114,6 +123,24 @@ class SettingsStore extends EventEmitter {
       (out[key] as number) = clamped;
     }
     out.exclusions = this.mergeExclusions(out.exclusions);
+    // M4. Allowlists come from a text area, so blanks and duplicates are
+    // normal input rather than corruption — trimmed here so every consumer
+    // (the HUD, the executor, the checks) sees the same clean list.
+    out.allowlistApps = cleanList(out.allowlistApps);
+    // Lowercased *before* deduping, not after: hostnames are case-insensitive,
+    // so `NOTION.so` and `notion.so` are one entry, and folding case after the
+    // dedupe leaves two rows that render identically.
+    out.allowlistDomains = cleanList((out.allowlistDomains ?? []).map((d) => d.toLowerCase()));
+    if (out.defaultProfile !== 'attended' && out.defaultProfile !== 'unattended') {
+      // §7.1: leashless is never a default. A stored blob that says otherwise —
+      // an older version, a hand-edited database — is corrected rather than
+      // honoured, because a default is a suggestion made once and then never
+      // reconsidered, and that is the one shape this profile must not take.
+      log.warn('settings', 'default profile reset; leashless is never a default', {
+        from: out.defaultProfile,
+      });
+      out.defaultProfile = 'attended';
+    }
     return out;
   }
 
@@ -133,6 +160,11 @@ class SettingsStore extends EventEmitter {
     }
     return list;
   }
+}
+
+function cleanList(list: string[] | undefined): string[] {
+  if (!Array.isArray(list)) return [];
+  return [...new Set(list.map((s) => s.trim()).filter(Boolean))];
 }
 
 export const settings = new SettingsStore();

@@ -40,6 +40,7 @@ const ZERO_TIERS: Record<SpendTier, number> = {
   inference: 0,
   operator: 0,
   'wake-check': 0,
+  qa: 0,
 };
 
 export class SpendMeter extends EventEmitter {

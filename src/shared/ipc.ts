@@ -3,6 +3,7 @@ import type {
   AnyNote,
   AppState,
   CaptureStats,
+  DayAnswer,
   DisplayInfo,
   FrameRow,
   GateAnswer,
@@ -13,8 +14,10 @@ import type {
   NoteType,
   NotesStats,
   ObservationRow,
+  OperatorAvailability,
   PendingGate,
   Permissions,
+  ProviderStatus,
   RunBudgets,
   RunStep,
   RunView,
@@ -25,6 +28,8 @@ import type {
   StartRunRequest,
   TaskScope,
   TaskStatus,
+  TimelineDay,
+  WakeupView,
 } from './types.js';
 
 /// The IPC contract, written once and imported by main, preload, and renderer.
@@ -86,6 +91,16 @@ export const CH = {
   activate: 'buddy:activate',
   readVaultFrame: 'buddy:readVaultFrame',
 
+  // M4 — standby, the Timeline, providers, and ask-about-my-day
+  getWakeups: 'buddy:getWakeups',
+  cancelWakeup: 'buddy:cancelWakeup',
+  checkWakeupsNow: 'buddy:checkWakeupsNow',
+  getTimelineDays: 'buddy:getTimelineDays',
+  getFramesForDay: 'buddy:getFramesForDay',
+  deleteDay: 'buddy:deleteDay',
+  askAboutMyDay: 'buddy:askAboutMyDay',
+  getProviders: 'buddy:getProviders',
+
   // main → renderer (send)
   onStats: 'buddy:stats',
   onFrame: 'buddy:frame',
@@ -104,6 +119,7 @@ export const CH = {
   onNotesStats: 'buddy:notesStats',
   onSpend: 'buddy:spend',
   onNotesChanged: 'buddy:notesChanged',
+  onWakeups: 'buddy:wakeups',
   hudShown: 'hud:shown',
   hudHidden: 'hud:hidden',
 } as const;
@@ -158,6 +174,13 @@ export interface Snapshot {
   inference: InferenceState;
   notesStats: NotesStats;
   spend: SpendReport;
+  /** Pending standby checks (PRD §6.6), so a window opened after a restart
+   *  shows what buddy is still waiting for rather than nothing. */
+  wakeups: WakeupView[];
+  /** §9.1's matrix, and whether the hotkey can actually run something. Carried
+   *  in the snapshot so the UI never has to guess at capability. */
+  providers: ProviderStatus[];
+  operator: OperatorAvailability;
 }
 
 export interface BuddyApi {
@@ -219,6 +242,19 @@ export interface BuddyApi {
    *  `readFrame` because the two directories have different lifetimes and one
    *  confinement check that covered both would be easy to widen by accident. */
   readVaultFrame(path: string): Promise<string | null>;
+
+  /** PRD §6.6. What buddy is waiting for, and the two things a person can do
+   *  about it: stop waiting, or make it look now. */
+  getWakeups(): Promise<WakeupView[]>;
+  cancelWakeup(id: number): Promise<boolean>;
+  checkWakeupsNow(): Promise<number>;
+  /** PRD §8.4. */
+  getTimelineDays(): Promise<TimelineDay[]>;
+  getFramesForDay(day: string, bundleId?: string | null): Promise<FrameRow[]>;
+  deleteDay(day: string): Promise<number>;
+  /** PRD §8.2 / §9: FTS5 over the notes, plus the notes, into context. */
+  askAboutMyDay(question: string): Promise<DayAnswer>;
+  getProviders(): Promise<{ providers: ProviderStatus[]; operator: OperatorAvailability }>;
   /** The HUD measures its own content and asks for the height; a fixed window
    *  would either clip the live feed or float a pill in a 420px void. */
   hudResize(height: number): Promise<void>;
@@ -243,6 +279,7 @@ export interface BuddyApi {
   onNotesStats(fn: (s: NotesStats) => void): () => void;
   onSpend(fn: (s: SpendReport) => void): () => void;
   onNotesChanged(fn: () => void): () => void;
+  onWakeups(fn: (w: WakeupView[]) => void): () => void;
   onHudShown(fn: () => void): () => void;
   onHudHidden(fn: () => void): () => void;
 }

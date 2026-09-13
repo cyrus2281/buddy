@@ -1,14 +1,49 @@
-import React from 'react';
+import React, { useSyncExternalStore } from 'react';
 import { motion, useReducedMotion } from 'framer-motion';
 
-/// Small shared pieces. Every animated one asks `useReducedMotion` rather than
+/// Small shared pieces. Every animated one asks `useMotionSafe` rather than
 /// relying on the CSS media query alone, because Framer drives transforms in JS
 /// and CSS cannot reach them (PRD §8).
 
 export const spring = { type: 'spring' as const, stiffness: 420, damping: 32, mass: 0.9 };
 
+/// **Two sources, one answer.**
+///
+/// `prefers-reduced-motion` is the system's, and Settings' "Force reduced
+/// motion" is the user's. Until M4 only the App shell consulted the second one,
+/// so turning the switch on quieted the tab transition and left every spring in
+/// the HUD, the note list and the run feed animating exactly as before — which
+/// is a worse result than not offering the switch, because the user has been
+/// told motion is off and can see that it is not.
+///
+/// A module-level flag rather than a context: the setting arrives on an IPC
+/// push in the main tree and in the HUD's separate renderer, and threading a
+/// provider through both for one boolean buys nothing. `useSyncExternalStore`
+/// is what makes a module-level value a legitimate React source.
+
+let forcedReducedMotion = false;
+const listeners = new Set<() => void>();
+
+/** Called by `useBuddy` whenever settings change, in every renderer. */
+export function setForcedReducedMotion(v: boolean) {
+  if (v === forcedReducedMotion) return;
+  forcedReducedMotion = v;
+  for (const l of listeners) l();
+}
+
+function subscribeMotion(fn: () => void) {
+  listeners.add(fn);
+  return () => listeners.delete(fn);
+}
+
 export function useMotionSafe() {
-  return !useReducedMotion();
+  const systemReduced = useReducedMotion();
+  const forced = useSyncExternalStore(
+    subscribeMotion,
+    () => forcedReducedMotion,
+    () => false,
+  );
+  return !systemReduced && !forced;
 }
 
 export function Card({

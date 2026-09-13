@@ -14,6 +14,8 @@ import { registerIpc, assertCoordinateScale, setHotkeyIssues } from './ipc.js';
 import { operator } from './agent/orchestrator.js';
 import { NotesEngine } from './notes/engine.js';
 import { Activation } from './agent/activation.js';
+import { StandbyManager } from './agent/standby.js';
+import { notify } from './notify.js';
 import { CH } from '../shared/ipc.js';
 import type { AppState } from '../shared/types.js';
 
@@ -25,10 +27,14 @@ let state: AppState = 'IDLE';
 let scheduler: CaptureScheduler;
 let engine: NotesEngine;
 let activation: Activation;
+let standby: StandbyManager;
 let tray: Tray | null = null;
 /** The last T0 signal, so the provisional goal has a window title to fall back
  *  on without waiting for a sidecar round trip on the hotkey path. */
 let lastFront = { bundleId: '', windowTitle: '' };
+/** The run id already announced as needing a person, so one parked run does not
+ *  produce a notification per `update` event. */
+let notifiedNeedsHuman = 0;
 
 function setState(next: AppState) {
   if (next === state) return;
@@ -37,6 +43,8 @@ function setState(next: AppState) {
   broadcast(CH.onState, state);
   updateTray();
 }
+
+let pendingWakeups = 0;
 
 function updateTray() {
   if (!tray) return;
@@ -50,6 +58,17 @@ function updateTray() {
   tray.setContextMenu(
     Menu.buildFromTemplate([
       { label: `buddy — ${state.toLowerCase()}`, enabled: false },
+      // Standby is the one state that is entirely invisible otherwise: the HUD
+      // is dismissed, nothing is moving, and buddy is still on the hook for
+      // something. The menu bar is where that belongs.
+      ...(pendingWakeups > 0
+        ? [
+            {
+              label: `Waiting on ${pendingWakeups} thing${pendingWakeups === 1 ? '' : 's'}`,
+              click: () => createHome(),
+            } as const,
+          ]
+        : []),
       { type: 'separator' },
       { label: 'Open buddy', click: () => createHome() },
       { label: 'Show HUD', accelerator: settings.get().hotkey, click: () => toggleHud() },
@@ -159,10 +178,20 @@ async function main() {
     scheduler,
     frontWindowTitle: () => lastFront.windowTitle,
   });
+  standby = new StandbyManager({
+    operator,
+    spend: engine.spend,
+    // The wake check is a structured-output call like the Observer's, so it
+    // rides the same client rather than opening a second one — and it is
+    // deliberately Anthropic-only for now: §9.1's other providers are for
+    // observation and Q&A, and this one drives a decision to take the machine.
+    client: () => engine.client(),
+    settings: () => settings.get(),
+  });
   scheduler.on('signal', (sig) => {
     lastFront = { bundleId: sig.bundleId, windowTitle: sig.windowTitle };
   });
-  registerIpc({ scheduler, engine, activation, getState: () => state, setState });
+  registerIpc({ scheduler, engine, activation, standby, getState: () => state, setState });
   createTray();
   createHud(); // built now so the hotkey is instant later
   // buddy's own clicks steal focus from the HUD constantly; blur must not
@@ -190,6 +219,19 @@ async function main() {
     setState('NEEDS_HUMAN');
     log.error('app', 'observation halted: buddyd will not stay up');
   });
+
+  // Standby (PRD §6.6) starts after the sidecar, because its first act on a
+  // due wakeup is to capture the screen. Everything it needs to know is in
+  // SQLite, so a restart picks up exactly what was pending when buddy quit.
+  pendingWakeups = standby.start().length;
+  standby.on('change', (w: unknown[]) => {
+    pendingWakeups = w.length;
+    if (pendingWakeups > 0 && state === 'OBSERVING') setState('STANDBY');
+    else if (pendingWakeups === 0 && state === 'STANDBY') setState('OBSERVING');
+    updateTray();
+  });
+  standby.on('resuming', () => setState('ACTING'));
+  if (pendingWakeups > 0 && state !== 'ACTING') setState('STANDBY');
 
   permissions.start();
   permissions.on('changed', (p) => {
@@ -229,10 +271,28 @@ async function main() {
   powerMonitor.on('resume', () => log.info('app', 'system resumed'));
   // The tray menu is rebuilt on every state change, which is what keeps the
   // Stop item present for exactly as long as there is something to stop.
-  operator.on('update', () => updateTray());
+  operator.on('update', (v) => {
+    updateTray();
+    // §7.1: `needs_human` is a terminal state with a notification and a
+    // preserved log. Latched on the transition so a view emitted twice does not
+    // notify twice.
+    if (v.status === 'needs_human' && v.id !== notifiedNeedsHuman) {
+      notifiedNeedsHuman = v.id;
+      notify.needsHuman(v.id, v.goal, v.haltReason ?? v.outcome?.summary ?? 'The run stopped.');
+    }
+    if (v.status === 'running') notifiedNeedsHuman = 0;
+    // A run's own terminal state decides where the app lands; standby is the
+    // one that outlives the run.
+    if (v.status === 'waiting') {
+      pendingWakeups = standby.pending().length;
+      setState('STANDBY');
+      updateTray();
+    }
+  });
   settings.on('changed', (next) => {
     scheduler.updateSettings(next);
     engine.updateSettings(next);
+    standby.updateSettings(next);
     bindHotkeys();
     broadcast(CH.onSettings, next);
     updateTray();
@@ -351,6 +411,10 @@ app.on('will-quit', async (e) => {
   hotkeys.unregisterAll();
   permissions.stop();
   retention.stop();
+  // Nothing to persist: every pending wakeup is already a row. That is the
+  // whole design (§6.6) — quitting buddy does not make it forget what it was
+  // waiting for, and the next launch picks the same rows back up.
+  standby?.stop();
   // Ends the session, which triggers a final rollup. It is fire-and-forget:
   // blocking quit on a model call would make buddy feel wedged on exit, and
   // the observations survive to be rolled up at next launch either way.

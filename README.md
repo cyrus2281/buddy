@@ -3,15 +3,21 @@
 A macOS assistant that watches how you work and, on one keystroke, takes over
 and finishes it. See [`PRD.md`](PRD.md) for the full spec.
 
-**Milestones M1 ("it sees"), M2 ("it acts") and M3 ("it remembers") are
-complete.** buddy observes — it captures the screen on a timer, throws away
-frames that show nothing new, and files the rest in a vault that empties itself
-daily. It remembers — every few minutes it writes down what you were doing, and
-every hour it folds those into recaps, the people and products you work with, and
-the tasks you are in the middle of. And it acts: press the hotkey and it already
-knows what you were doing, so there is nothing to type. Confirm, and it drives the
-mouse and keyboard until the job is done, under guardrails it cannot talk its way
-past and kill switches that stop it dead.
+**All four milestones are complete.** buddy observes — it captures the screen on
+a timer, throws away frames that show nothing new, and files the rest in a vault
+that empties itself daily. It remembers — every few minutes it writes down what
+you were doing, and every hour it folds those into recaps, the people and
+products you work with, and the tasks you are in the middle of. It acts: press
+the hotkey and it already knows what you were doing, so there is nothing to type.
+Confirm, and it drives the mouse and keyboard until the job is done, under
+guardrails it cannot talk its way past and kill switches that stop it dead.
+
+**And it waits.** When it gets as far as it can and the next move is somebody
+else's, it does not fail and it does not forget. It says what it is watching for,
+goes quiet, and checks every few minutes for a fraction of a cent. When the thing
+happens, it picks up the same run where it left off — with everything it had
+already worked out still in hand. Quit buddy and relaunch it; it is still
+waiting, because the wait is a row in a database and not a timer in a process.
 
 The typed goal is still there. It is now the override, not the entry point.
 
@@ -72,9 +78,12 @@ machine, which is often the explanation for a click that landed somewhere odd.
 | `npm run dev` | Build the sidecar, then run the app with hot reload |
 | `npm run build` | Build the sidecar and the app bundle |
 | `npm run build:sidecar` | Build `buddyd` alone |
-| `npm run check:m1` | The M1 exit-criteria checks (14 of them) |
-| `npm run check:m2` | The M2 exit-criteria checks (59 of them) |
+| `npm run check:m1` | The M1 exit-criteria checks (15 of them) |
+| `npm run check:m2` | The M2 exit-criteria checks (66 of them) |
 | `npm run check:m3` | The M3 exit-criteria checks (66 of them) |
+| `npm run check:m4` | The M4 exit-criteria checks (41 of them) |
+| `npm run live:run` | One real two-app run against a live Opus 5 (needs `ANTHROPIC_API_KEY`) |
+| `npm run live:standby` | Story B end to end against live Opus 5 + Haiku 4.5 |
 | `npm run typecheck` | Both tsconfigs |
 | `npm run eval:goal` | The goal-inference eval (needs `ANTHROPIC_API_KEY`) |
 | `npm run eval:record` | Re-record the eval's real-screenshot fixtures |
@@ -96,6 +105,228 @@ survives rebuilds. This is PRD **R2**.
 
 After `npm run dist`, sign the bundle with `./scripts/sign-app.sh` — it signs the
 sidecar before the outer bundle, so the app's seal actually covers it.
+
+**This was confirmed in M4, by doing it.** The app was rebuilt (a new `cdhash`),
+installed over the running copy, and launched straight into `OBSERVING` with
+Screen Recording and Accessibility both still granted.
+
+**One thing the certificate does not carry across a rebuild: your API key.**
+`safeStorage` ties its Keychain item to the exact binary that wrote it, so a
+re-signed build cannot decrypt a key the previous build stored. macOS will
+prompt for your login password once, and buddy will tell you in Settings that
+it has a stored key it cannot read. Paste the key in again and it is
+re-encrypted for the new build. Unlike the Screen Recording failure this one is
+loud, and it is not a bug in the signing setup — it is what a Keychain ACL is.
+
+**What is actually stable across rebuilds is the Designated Requirement, not
+the hash.** Verified on the M4 build: `codesign -d -r-` returns
+
+```
+designated => identifier "com.cyrus.buddy" and certificate leaf = H"205a03e7…"
+```
+
+before and after re-signing, while the `cdhash` changes every time. The identifier
+and the certificate leaf are what a self-signed identity keeps constant, and that
+is why the Screen Recording grant survives a rebuild where an ad-hoc signature
+loses it.
+
+One thing to know about the ordering: `electron-builder` signs the bundle *before*
+it builds the `.dmg`, so the app inside the `.dmg` carries electron-builder's
+signature and `sign-app.sh` re-signs the extracted `release/mac-arm64/buddy.app`.
+Both have the same Designated Requirement, so the grant is stable either way —
+`sign-app.sh` matters when you build the sidecar separately, or re-sign after
+editing it.
+
+## What M4 built — the waiting, and the rest of the app
+
+```
+src/main/agent/
+  standby.ts      the poll, the cheap check, the resume, the exhaustion
+  context.ts      the transcript that survives a restart, images stripped
+src/main/
+  notify.ts       three notifications, and only three
+  providers.ts    §9.1's matrix as data, plus the OpenAI-compatible client
+  notes/ask.ts    FTS5 + the notes into context; vector search is a later backfill
+  store/timeline.ts  days, apps, and "delete this day now"
+src/renderer/
+  views/Timeline.tsx        the day scrubber and the filmstrip
+  components/standby.tsx    what buddy is waiting for, and how to stop it
+  components/ask.tsx        one input that either answers or runs
+```
+
+### The parts worth knowing about
+
+**The wait is a row, not a timer.** A `setTimeout` for five minutes does not
+fire on a Mac that slept for four of them, and "buddy is still there forty
+minutes later" is the entire claim of Story B. So the schedule lives in SQLite
+and a short poll asks what is due. Quitting buddy does not cancel anything; the
+next launch reads the same rows and says out loud what it found. An overdue
+wakeup fires **once**, not once per interval missed — a check that did not happen
+has nothing to catch up on, because the condition is either true now or it is not.
+
+**A check buddy could not run does not spend an attempt.** No key, a wedged
+sidecar, a capture that failed, a 502 from the API — none of those is an answer
+about the condition. Burning one of twelve attempts on each would turn a
+five-minute outage into a wakeup that quietly gave up on something the user was
+promised. Only a real answer counts.
+
+**The check is cheap on purpose, and the number matters.** One downscaled
+screenshot and the condition string through Haiku 4.5 costs **$0.0028**. Twelve
+of those — an hour of checking every five minutes — is under four cents. The same
+hour through Opus would be a reason not to offer the feature.
+
+**Resume is the same run, continuing.** Same row in `runs`, same step sequence
+continuing rather than restarting, and the saved transcript replayed into the
+request so the model does not re-create the page it was supposed to be filling
+in. The wake checks are in the run log too: waiting is part of what a run did,
+and a log that shows twenty clicks and then an hour of nothing cannot answer
+"was it actually watching".
+
+**The budgets restart on a resume; the run row does not.** A run that waited
+forty minutes would blow a ten-minute wall clock before its first click, so each
+attempt gets its own step, time and cost budget. The row stays cumulative, so
+the Run Log still shows what the whole thing cost.
+
+**The saved transcript keeps the blocks and throws away the pictures.** Three
+live screenshots per wait is over a megabyte of base64 showing a screen that has
+since changed, and the resume takes a fresh one as its first act. The
+`tool_result` blocks stay, because dropping one orphans its `tool_use` and
+invalidates the conversation on the next request — so an image becomes a
+placeholder and the structure is untouched. A six-screenshot transcript is 1.1 KB
+on disk instead of 1.2 MB.
+
+**Ask-about-my-day needs both halves of its retrieval.** Searching for the
+question's terms answers "what did Priya want" and returns *nothing* for "what
+did I do this morning?" — which has no distinctive term in it and is the
+commonest question there is. So the recent recaps, tasks and relations go in
+regardless. The answer cites note ids, and a citation that does not resolve to
+something actually sent is dropped rather than rendered as a chip that opens
+nothing.
+
+**The Timeline's countdown is read from the frames, not from the setting.**
+Retention is stamped on a frame when it is written, so somebody who changed the
+setting yesterday has frames from two regimes in one directory. Showing the
+current setting would display a number that is simply not when the files go.
+Days are grouped by *local* date in SQL, matching the vault's own directory
+names — a UTC key would put this morning in yesterday for anyone west of
+Greenwich.
+
+**Settings says the Claude-only rule where it matters.** The provider table is
+generated from the capability flags, and the Operator's availability is shown
+with the *same sentence* `orchestrator.start()` throws. One message, one author:
+the UI cannot end up disagreeing with the guard about why the hotkey is
+unavailable.
+
+## What M4 verifies
+
+`npm run check:m4` runs 41 checks against the real modules, with the same one
+thing replaced as M2 and M3: the **model**. The `StandbyManager`, the
+`AgentRunner`'s resume path, the `Operator`, the store, the transcript
+serialisation, the Timeline queries, the retention sweep and the FTS5 retrieval
+are all shipping code.
+
+- **The wakeup surviving a restart**, asserted by closing the database and
+  reopening it — which is what quitting buddy does — then constructing a fresh
+  manager and finding the schedule still there.
+- **The reschedule arithmetic**: one attempt spent, the next check exactly one
+  interval out, the run still waiting, and the model's own sentence in the run
+  log rather than a bare `false`.
+- **Three ways of being unable to look** — no key, a failed capture, a failing
+  API — none of which spends an attempt, and a real check afterwards that does.
+- **Exhaustion**, with the run's real step count and dollars preserved rather
+  than zeroed, the number of looks in the outcome text, and nothing firing
+  afterwards.
+- **Resume carrying prior context**, asserted by reading the request the resumed
+  run actually sent: the earlier conversation is in it, the condition is in it,
+  what the check saw is in it, and every `tool_use` still has its `tool_result`.
+  Plus that the steps append rather than overwriting the first attempt's.
+- **Standby composing** — wait → resume → wait — with a fresh wakeup, a fresh
+  attempt budget, and the accumulated context still there.
+- **A met condition with no transcript stopping**, rather than starting the task
+  over from a goal string, which is the behaviour this whole feature exists to
+  avoid.
+- **Retention against the Timeline**: two days of frames, the sweep taking
+  exactly the expired one, "delete this day now" unlinking the PNGs while the
+  note that cites them survives and reports them expired.
+- The provider matrix, the strict-mode schema conversion, the settings
+  normalisations, and that `notes.embedding` is `NULL` everywhere.
+
+What it does **not** cover: a live model call, and whether macOS actually
+displays a notification (the notifier is injected, so what is asserted is that
+they fire).
+
+### The two live runs
+
+`npm run live:run` and `npm run live:standby` are the only things here that talk
+to the real API, and they exist because the check suites structurally cannot.
+
+**`live:run`** does a real two-app task — read two numbers out of a TextEdit
+scratch document, add them in Calculator, type the total back — and then answers
+the three questions M2 left open. It finished the task in **41 steps, 62 s,
+$0.226**, and the harness checked the file rather than the model's summary.
+
+- **`toolset_name: "computer"` is accepted**: 39 computer `tool_result` blocks
+  across 7 turns, zero API errors, in any run.
+- **Prompt caching works**: `cache_read_input_tokens` 6,346 → 9,511 → 13,258 →
+  14,813 → 18,799 → 22,209 → 23,128. No silent invalidator.
+- **Pruning does not desync pairing**: 7 images → 4 pruned → 3 left, pairing
+  intact on both sides of the prune, and the API accepted the pruned
+  conversation.
+
+It also found three things no scripted client could, and two of them were bugs:
+
+1. **A gate answered synchronously was silently dropped and the run hung
+   forever.** `askUser()` emitted the `gate` event before installing the
+   promise's resolver, so an immediate answer found nothing to resolve and the
+   promise was never settled. The HUD never hit it, because an answer over IPC
+   is always a tick late. The first live run stopped dead at step 3 holding the
+   keyboard, with no error anywhere.
+2. **A halted run leaves an unanswered batch, and standby is the first thing
+   that ever re-sends one.** A denied gate, a kill switch, or a blown budget
+   returns from the loop without pushing that batch's results — correctly,
+   because the model gets no further turn after a block. The API is blunt about
+   what that means later: *"tool_use ids were found without tool_result blocks
+   immediately after"*. `sealTranscript` now answers every orphan with an error
+   result saying the block did not run. This was nearly blamed on pruning: the
+   first harness only checked pairing *after* the prune and reported seven
+   orphans as a pruning failure. Measuring both sides showed they were already
+   there.
+3. **A GUI calculator costs one step per digit.** Given 30 steps, the run
+   reached the right answer and ran out of budget on the way back to TextEdit.
+   `8616 + 5821 =` is eleven clicks. The step budget counts tool calls, not
+   intentions.
+
+Installing the build and actually opening it found two more, which neither the
+checks nor the live harnesses could — neither of them opens a window:
+
+4. **The packaged app opened a blank window.** `windows.ts` resolved the preload
+   script and the renderer's HTML relative to `import.meta.url`, which is right
+   while that module lives in `out/main/index.js` and wrong once rollup hoists it
+   into `out/main/chunks/` — and what decides the hoist is how many modules
+   import it. Adding `notify.ts` made it two. So a path's correctness depended on
+   a bundler heuristic reacting to an unrelated file, it was invisible in
+   development (where the renderer is served over HTTP), and in production the
+   `ERR_FILE_NOT_FOUND` went to a renderer console nobody has open. Both paths
+   now come from `app.getAppPath()`, and a failed load is logged where buddy's
+   own log will show it.
+
+5. **A re-signed build could not read its own stored API key, and said so every
+   few seconds.** The Screen Recording grant survives a rebuild — that is what
+   the self-signed certificate is for — but the Keychain item `safeStorage`
+   writes is tied to the binary and does not. Since `./scripts/sign-app.sh` is a
+   normal step here, so is this. It is now latched and logged once with the real
+   explanation, and Settings says *"buddy has a stored key it cannot read"* with
+   the one action that fixes it.
+
+**`live:standby`** is Story B with nothing scripted. A document says `STATUS:
+pending`; Opus 5 reads it, cannot proceed, and calls `finish(waiting)` with a
+condition. The database is then **closed and reopened** — the wait survives it,
+because the wait is a row. The document flips to `READY`. The real
+`StandbyManager` captures the real screen and asks **Haiku 4.5**, which sees it
+on the first check for **$0.00214**. The *same run* resumes on Opus 5 with its
+saved transcript, appends `SHIPPED`, saves, and finishes `done` — 12 cumulative
+steps, $0.126, one wake check and one resume step in the run log, the wakeup
+consumed and the transcript cleaned up.
 
 ## What M3 built — the memory
 
@@ -331,6 +562,20 @@ first live run.
 Note that the checks synthesize a small amount of real input on the machine they
 run on — a pointer move that is put back, and F19, which has no default binding
 anywhere in macOS. Nothing is typed and nothing is clicked.
+
+**That sentence was false until M4, and the way it was caught is worth keeping.**
+The vocabulary check proved buddyd's 17 action names by sending each one a
+*well-formed* request — so it really clicked, really triple-clicked, really held
+the mouse button down, and really typed the letter `a` into whatever window the
+person running the suite had focused. It was found by those letters arriving in
+a chat window during an M4 run. It had also been quietly causing a flaky failure
+two checks later: a triple-click at 1,1 opens the Apple menu, an open menu grabs
+the cursor, and `CGWarpMouseCursorPosition` then reports success while the
+pointer does not move — so *"real CGEvent dispatch moves the pointer"* failed
+for a reason that had nothing to do with CGEvent dispatch. The probe now sends
+`coordinate: []`, which fails validation inside buddyd before anything is
+synthesized. The only things that still execute are a cursor read and a
+one-second `wait`.
 
 ## What M1 built
 

@@ -15,6 +15,7 @@ import {
   isComputerAction,
 } from './tools.js';
 import { OPERATOR_MODEL, type ModelClient } from './client.js';
+import { runContext } from './context.js';
 import {
   DEFAULT_BUDGETS,
   type Allowlist,
@@ -64,6 +65,23 @@ const MAX_TREE_CHARS = 12_000;
  *  coalesced to at most one line per this many milliseconds. */
 const HUMAN_INPUT_COALESCE_MS = 5_000;
 
+/** What a resume needs that a first run does not (PRD §6.6). Assembled by the
+ *  standby manager from the `wakeups` row, the `runs` row, and the transcript
+ *  saved beside the run's screenshots. */
+export interface ResumeRunRequest extends StartRunRequest {
+  runId: number;
+  messages: Anthropic.Messages.MessageParam[];
+  /** What buddy was waiting for, and what the cheap check decided about it. */
+  condition: string;
+  why: string;
+  /** Which check this was, 1-based. The model is told, because "you have been
+   *  waiting half an hour" is a fact about the world it should have. */
+  attempt: number;
+  priorSteps: number;
+  priorCostUsd: number;
+  resumes: number;
+}
+
 export interface RunnerDeps {
   client: ModelClient;
   executor?: Executor;
@@ -97,6 +115,11 @@ export class AgentRunner extends EventEmitter {
   private profile: StartRunRequest['profile'] = 'attended';
   private lastHumanInputAt = 0;
   private humanInputCount = 0;
+  /** M4 (§6.6). Steps and dollars carried from the attempts before this one, so
+   *  the run row stays cumulative across resumes while the budgets restart. */
+  private carriedSteps = 0;
+  private carriedCostUsd = 0;
+  private resumes = 0;
   /** "Allow for the rest of this run", keyed by action class and app. */
   private grants = new Map<string, string>();
   /** How many times each grant key has been put to the user, so the second ask
@@ -135,7 +158,29 @@ export class AgentRunner extends EventEmitter {
       cacheReadTokens: this.tracker.cacheReadTokens,
       humanInputs: this.humanInputCount,
       sessionGrants: [...this.grants.values()],
+      resumes: this.resumes,
     };
+  }
+
+  /**
+   * The live conversation, and a way to prune it on demand.
+   *
+   * Both exist for `live-run.ts`, which is the harness that answers the one
+   * question every check in this repository is structurally unable to answer:
+   * whether the API accepts what this loop builds. Pruning in particular only
+   * fires every 25 turns, so a real task finishes long before it ever runs —
+   * and "the pruned conversation is still valid" is exactly the kind of claim
+   * that is obvious right up until a 400 says otherwise.
+   *
+   * Read-only from the caller's side apart from `pruneNow`, and nothing in the
+   * shipping path calls either.
+   */
+  transcript(): Anthropic.Messages.MessageParam[] {
+    return this.messages;
+  }
+
+  pruneNow(): number {
+    return this.pruneScreenshots();
   }
 
   /** The confirm gate's answer, from the HUD. `stop` is the third button: the
@@ -199,21 +244,6 @@ export class AgentRunner extends EventEmitter {
       const first = await this.executor.capture(this.runId, null);
       this.lastFrame = first;
 
-      const system: Anthropic.Messages.TextBlockParam[] = [
-        {
-          type: 'text',
-          text: buildSystemPrompt({
-            goal: this.goal,
-            profile: this.profile,
-            allowlist: this.allowlist,
-            budgets: this.budgets,
-            scale: first.scale,
-            screen: { width: first.width, height: first.height },
-          }),
-          cache_control: { type: 'ephemeral' },
-        },
-      ];
-
       this.messages = [
         {
           role: 'user',
@@ -235,25 +265,197 @@ export class AgentRunner extends EventEmitter {
         scale: first.scale,
       });
 
-      await this.loop(system);
+      await this.loop(this.systemFor(first));
     } catch (e) {
       this.park('needs_human', `The run failed: ${(e as Error).message}`);
       log.error('agent', 'run threw', { runId: this.runId, error: (e as Error).message });
     } finally {
-      this.kill.off('human-input', this.onHumanInput);
-      await this.kill.disarm();
-      this.endedAt = Date.now();
-      runs.finish(this.runId, this.status, this.tracker.usage().steps, this.tracker.usage().costUsd, this.outcome);
-      log.info('agent', 'run ended', {
-        runId: this.runId,
-        status: this.status,
-        steps: this.tracker.usage().steps,
-        cost: this.tracker.usage().costUsd.toFixed(4),
-        cacheRead: this.tracker.cacheReadTokens,
-      });
-      this.emitUpdate();
+      await this.settle();
     }
     return this.view();
+  }
+
+  /**
+   * Come back from standby, into the same run (PRD §6.6).
+   *
+   * "Resumes the original run with its full prior context" is meant literally:
+   * the same `runs` row, the same `run_steps` sequence continuing where it left
+   * off, and the whole saved transcript — so the model does not re-create the
+   * page it was supposed to be filling in, which is the same failure
+   * `already_done` exists to prevent at activation (§6.1).
+   *
+   * Three things restart rather than carry:
+   *
+   *   - **The budgets.** A run that waited forty minutes for a reply would blow
+   *     a ten-minute wall clock before its first click. Steps and dollars
+   *     restart with them, because a resumed attempt is a fresh piece of work;
+   *     the *run row* stays cumulative so the Run Log still shows what the whole
+   *     thing cost.
+   *   - **The screenshot.** The saved transcript's images are placeholders
+   *     (`context.ts` says why), and the first thing this does is look at the
+   *     screen as it is now.
+   *   - **The kill switches**, armed again, because they were disarmed when the
+   *     run parked.
+   */
+  async resume(req: ResumeRunRequest): Promise<RunView> {
+    this.goal = req.goal.trim();
+    this.profile = req.profile;
+    this.allowlist = req.allowlist;
+    this.budgets = { ...DEFAULT_BUDGETS, ...(req.budgets ?? {}) };
+    this.tracker = new BudgetTracker(this.budgets);
+    this.startedAt = this.deps.now?.() ?? Date.now();
+    this.runId = req.runId;
+    this.carriedSteps = req.priorSteps;
+    this.carriedCostUsd = req.priorCostUsd;
+    this.resumes = req.resumes + 1;
+    this.status = 'running';
+    this.outcome = null;
+    this.haltReason = null;
+    // The Run Log is one continuous sequence for one run: a resumed step that
+    // reused index 0 would overwrite the opening screenshot of the first
+    // attempt, and the trust surface would quietly lose what buddy first saw.
+    this.stepIdx = runs.nextStepIdx(this.runId);
+
+    runs.reopen(this.runId);
+    log.info('agent', 'run resumed from standby', {
+      runId: this.runId,
+      resumes: this.resumes,
+      condition: req.condition,
+      priorSteps: this.carriedSteps,
+    });
+    this.emitUpdate();
+
+    this.kill.on('human-input', this.onHumanInput);
+    await this.kill.arm();
+
+    try {
+      const first = await this.executor.capture(this.runId, null);
+      this.lastFrame = first;
+      this.messages = req.messages.slice();
+      this.appendResumeTurn(await this.resumeBlocks(req, first));
+      this.recordStep({
+        tool: 'resume',
+        input: { condition: req.condition, attempt: req.attempt },
+        result: `Resumed after ${req.attempt} check${req.attempt === 1 ? '' : 's'}: ${req.why}`,
+        framePath: first.path,
+        isError: false,
+        verdict: null,
+        scale: first.scale,
+      });
+
+      await this.loop(this.systemFor(first));
+    } catch (e) {
+      this.park('needs_human', `The resumed run failed: ${(e as Error).message}`);
+      log.error('agent', 'resumed run threw', { runId: this.runId, error: (e as Error).message });
+    } finally {
+      await this.settle();
+    }
+    return this.view();
+  }
+
+  /** The system prompt, which depends on the frame because §6.2's scale factor
+   *  and the screen size are in it. Built identically for a first run and a
+   *  resume so the two cannot drift. */
+  private systemFor(frame: Frame): Anthropic.Messages.TextBlockParam[] {
+    return [
+      {
+        type: 'text',
+        text: buildSystemPrompt({
+          goal: this.goal,
+          profile: this.profile,
+          allowlist: this.allowlist,
+          budgets: this.budgets,
+          scale: frame.scale,
+          screen: { width: frame.width, height: frame.height },
+        }),
+        cache_control: { type: 'ephemeral' },
+      },
+    ];
+  }
+
+  private async resumeBlocks(
+    req: ResumeRunRequest,
+    frame: Frame,
+  ): Promise<Anthropic.Messages.ContentBlockParam[]> {
+    return [
+      {
+        type: 'text',
+        text:
+          `You went to standby waiting for this to become true: "${req.condition}".\n` +
+          `buddy checked ${req.attempt} time${req.attempt === 1 ? '' : 's'} and has now decided it is: ` +
+          `${req.why}\n\n` +
+          'Everything above this message is your own work from before the wait — it happened, and ' +
+          'you should continue from it rather than starting again. The screenshots in it have been ' +
+          'replaced with placeholders because the screen has moved on; the screen as it is right ' +
+          'now is below. Check that what you did is still there before you build on it, then ' +
+          'finish the job and call `finish`.',
+      },
+      { type: 'text', text: 'The screen as it is right now:' },
+      { type: 'image', source: { type: 'base64', media_type: 'image/png', data: frame.base64 } },
+      { type: 'text', text: await this.treeBlockText() },
+    ];
+  }
+
+  /**
+   * Add the resume turn to the saved transcript.
+   *
+   * The saved transcript ends with the user message carrying the `finish` tool
+   * result, so the resume blocks are folded into it rather than pushed as a
+   * second consecutive user message. The API accepts consecutive user messages,
+   * but one message is what the conversation actually is, and it keeps the
+   * rolling cache breakpoint landing where the next request expects it.
+   */
+  private appendResumeTurn(blocks: Anthropic.Messages.ContentBlockParam[]) {
+    const last = this.messages[this.messages.length - 1];
+    if (last && last.role === 'user' && Array.isArray(last.content)) {
+      (last.content as Anthropic.Messages.ContentBlockParam[]).push(...blocks);
+      return;
+    }
+    this.messages.push({ role: 'user', content: blocks });
+  }
+
+  /**
+   * Everything both entry points do on the way out.
+   *
+   * Shared so a resumed run cannot end differently from a first one — and so
+   * the one thing M4 adds, saving the transcript when the run parks in
+   * `waiting`, happens on both paths.
+   */
+  private async settle(): Promise<void> {
+    this.kill.off('human-input', this.onHumanInput);
+    await this.kill.disarm();
+    this.endedAt = Date.now();
+    const usage = this.tracker.usage();
+    const steps = usage.steps + this.carriedSteps;
+    const cost = usage.costUsd + this.carriedCostUsd;
+
+    // Saved *here* rather than in `finish()`, because the finish tool's own
+    // result is appended after `finish()` returns — a transcript saved a moment
+    // earlier would end with an unanswered `tool_use` and be rejected on the
+    // next request.
+    if (this.status === 'waiting') {
+      runContext.save({
+        runId: this.runId,
+        goal: this.goal,
+        profile: this.profile,
+        allowlist: this.allowlist,
+        budgets: this.budgets,
+        messages: this.messages,
+        priorSteps: steps,
+        priorCostUsd: cost,
+        resumes: this.resumes,
+      });
+    }
+
+    runs.finish(this.runId, this.status, steps, cost, this.outcome);
+    log.info('agent', 'run ended', {
+      runId: this.runId,
+      status: this.status,
+      steps,
+      cost: cost.toFixed(4),
+      cacheRead: this.tracker.cacheReadTokens,
+    });
+    this.emitUpdate();
   }
 
   private async loop(system: Anthropic.Messages.TextBlockParam[]): Promise<void> {
@@ -280,7 +482,11 @@ export class AgentRunner extends EventEmitter {
         output_config: { effort: 'high' },
       });
       this.tracker.addUsage(res.usage);
-      runs.progress(this.runId, this.tracker.usage().steps, this.tracker.usage().costUsd);
+      runs.progress(
+        this.runId,
+        this.tracker.usage().steps + this.carriedSteps,
+        this.tracker.usage().costUsd + this.carriedCostUsd,
+      );
       this.emitUpdate();
 
       this.messages.push({ role: 'assistant', content: res.content as Anthropic.Messages.ContentBlockParam[] });
@@ -640,11 +846,28 @@ export class AgentRunner extends EventEmitter {
       askedBefore,
     };
     this.status = 'gated';
-    this.emit('gate', this.gate);
-    this.emitUpdate();
-    return new Promise((resolve) => {
+
+    // The resolver is installed **before** the event goes out, and that
+    // ordering is load-bearing rather than tidy.
+    //
+    // Emitting first works only while every listener answers asynchronously,
+    // which is true of the HUD — the answer arrives over IPC a human moment
+    // later — and false of anything that decides immediately. A synchronous
+    // `resolveGate` used to find no resolver, return `false`, and be dropped on
+    // the floor; the promise created a line later was then never settled and
+    // the run hung forever holding the keyboard, with no error anywhere.
+    //
+    // Found by the live-run harness, which denies gates the instant they are
+    // raised. It cost a real run at step 3 (PRD §6.5) and it would eventually
+    // have cost a real user: any future caller that can answer without
+    // waiting — a policy engine, a replay, a headless profile — walks into the
+    // same hang.
+    const promise = new Promise<GateAnswer>((resolve) => {
       this.gateResolver = resolve;
     });
+    this.emit('gate', this.gate);
+    this.emitUpdate();
+    return promise;
   }
 
   // ── Human input, which is not a halt ──────────────────────────────────────

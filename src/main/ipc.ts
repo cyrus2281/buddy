@@ -14,15 +14,19 @@ import { runs } from './store/runs.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import { notes, observations, relations, tasks } from './store/notes.js';
+import { timeline } from './store/timeline.js';
+import { askAboutMyDay } from './notes/ask.js';
+import { operatorAvailability, providerStatuses } from './providers.js';
 import type { NotesEngine } from './notes/engine.js';
 import type { Activation } from './agent/activation.js';
+import type { StandbyManager } from './agent/standby.js';
 import type { CaptureScheduler } from './capture/scheduler.js';
 import {
-  DEFAULT_BUDGETS,
   type Allowlist,
   type AppState,
   type DisplayInfo,
   type NoteType,
+  type RunBudgets,
   type StartRunRequest,
   type TaskScope,
   type TaskStatus,
@@ -31,18 +35,23 @@ import {
 /** The allowlist a run starts from when there is nothing to seed it with —
  *  a typed goal, or an activation whose reading has not landed yet. When a
  *  reading is available, `target_apps` replaces this and the user confirms the
- *  app set in the same keystroke as the goal (PRD §6.1). */
-export const DEFAULT_ALLOWLIST: Allowlist = {
-  apps: [
-    'com.apple.Safari',
-    'com.google.Chrome',
-    'com.apple.TextEdit',
-    'com.apple.Notes',
-    'com.apple.finder',
-    'com.microsoft.VSCode',
-  ],
-  domains: [],
-};
+ *  app set in the same keystroke as the goal (PRD §6.1).
+ *
+ *  M4 made it editable in Settings, so it is read from there rather than being
+ *  a constant: §8.6 lists allowlists as a settings surface, and a default list
+ *  nobody can change is not one. */
+export const defaultAllowlist = (): Allowlist => ({
+  apps: [...settings.get().allowlistApps],
+  domains: [...settings.get().allowlistDomains],
+});
+
+/** Likewise the budgets: §6.5 says all three are configurable, and until M4
+ *  they were configurable only by editing `DEFAULT_BUDGETS`. */
+export const defaultBudgets = (): RunBudgets => ({
+  maxSteps: settings.get().budgetMaxSteps,
+  maxWallClockMs: settings.get().budgetMaxWallClockMs,
+  maxCostUsd: settings.get().budgetMaxCostUsd,
+});
 
 /// Every renderer-reachable operation, registered in one place. Handlers are
 /// deliberately thin: they translate and delegate, so the behaviour under test
@@ -52,6 +61,7 @@ interface Ctx {
   scheduler: CaptureScheduler;
   engine: NotesEngine;
   activation: Activation;
+  standby: StandbyManager;
   getState: () => AppState;
   setState: (s: AppState) => void;
 }
@@ -107,11 +117,14 @@ export function registerIpc(ctx: Ctx) {
     scaleWarning,
     activeRun: operator.active(),
     hotkeyIssues,
-    defaultBudgets: DEFAULT_BUDGETS,
-    defaultAllowlist: DEFAULT_ALLOWLIST,
+    defaultBudgets: defaultBudgets(),
+    defaultAllowlist: defaultAllowlist(),
     inference: ctx.activation.current(),
     notesStats: ctx.engine.stats(),
     spend: ctx.engine.spend.report(),
+    wakeups: ctx.standby.pending(),
+    providers: providerStatuses(),
+    operator: operatorAvailability(),
   });
 
   ipcMain.handle(CH.getSnapshot, snapshot);
@@ -164,7 +177,11 @@ export function registerIpc(ctx: Ctx) {
   ipcMain.handle(CH.startRun, async (_e, req: StartRunRequest) => {
     ctx.setState('ACTING');
     try {
-      const view = await operator.start(req);
+      const view = await operator.start({
+        ...req,
+        allowlist: req.allowlist ?? defaultAllowlist(),
+        budgets: req.budgets ?? defaultBudgets(),
+      });
       // The run's own terminal state decides where the app lands, so a parked
       // run leaves a visible NEEDS_HUMAN rather than quietly resuming.
       ctx.setState(view.status === 'needs_human' ? 'NEEDS_HUMAN' : view.status === 'waiting' ? 'STANDBY' : 'OBSERVING');
@@ -276,6 +293,64 @@ export function registerIpc(ctx: Ctx) {
       return null;
     }
   });
+
+  // ── M4 — standby, the Timeline, providers, Q&A ──────────────────────────
+
+  ipcMain.handle(CH.getWakeups, () => ctx.standby.pending());
+  ipcMain.handle(CH.cancelWakeup, (_e, id: number) => {
+    const ok = ctx.standby.cancel(id);
+    if (ok && ctx.getState() === 'STANDBY') {
+      ctx.setState(ctx.scheduler.isRunning() ? 'OBSERVING' : 'IDLE');
+    }
+    return ok;
+  });
+  ipcMain.handle(CH.checkWakeupsNow, async () => {
+    // Standby is invisible by design — it is a row in a table and a poll. A
+    // user who cannot make one happen cannot tell whether it works, which is
+    // the same argument as Settings' "observe now".
+    //
+    // The attempt is *not* skipped. A check the user asked for is still a
+    // check: it costs the same fraction of a cent and it answers the same
+    // question, and letting this button poll past `max_attempts` by hand would
+    // make the limit a suggestion. `makeDue` moves the clock and nothing else;
+    // the tick that follows is what spends the attempt.
+    for (const w of ctx.standby.pending()) {
+      if (w.runStatus === 'waiting') runs.makeDue(w.id, Date.now() - 1);
+    }
+    return ctx.standby.tick();
+  });
+
+  ipcMain.handle(CH.getTimelineDays, () => timeline.days());
+  ipcMain.handle(CH.getFramesForDay, (_e, day: string, bundleId?: string | null) =>
+    timeline.framesFor(day, bundleId),
+  );
+  ipcMain.handle(CH.deleteDay, (_e, day: string) => {
+    const n = timeline.deleteDay(day);
+    ctx.scheduler.refreshDiskStats();
+    broadcast(CH.onFramesPurged, {
+      expiredFrames: n,
+      orphanFiles: 0,
+      emptyDirs: 0,
+      staleStaging: 0,
+      ranAt: Date.now(),
+    });
+    return n;
+  });
+
+  ipcMain.handle(CH.askAboutMyDay, async (_e, question: string) => {
+    const answer = await askAboutMyDay(question);
+    ctx.engine.spend.record('qa', answer.costUsd);
+    return answer;
+  });
+
+  ipcMain.handle(CH.getProviders, () => ({
+    providers: providerStatuses(),
+    operator: operatorAvailability(),
+  }));
+
+  ctx.standby.on('change', (w) => broadcast(CH.onWakeups, w));
+  ctx.standby.on('checked', () => broadcast(CH.onWakeups, ctx.standby.pending()));
+  ctx.standby.on('exhausted', () => broadcast(CH.onWakeups, ctx.standby.pending()));
 
   ipcMain.handle(CH.hideHud, () => hideHud());
   ipcMain.handle(CH.openHome, () => {

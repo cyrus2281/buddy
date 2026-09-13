@@ -47,6 +47,21 @@ interface StepEnvelope {
   scale: number | null;
 }
 
+/** A `wakeups` row joined to the run it belongs to. Snake case, because it is
+ *  what SQLite hands back; `WakeupView` in shared types is the camel-case shape
+ *  that crosses IPC. */
+export interface WakeupRow {
+  id: number;
+  run_id: number;
+  fire_at: number;
+  condition: string;
+  interval_s: number;
+  attempts: number;
+  max_attempts: number;
+  goal: string;
+  run_status: RunStatus;
+}
+
 export const runs = {
   create(goal: string, profile: RunProfile): number {
     const info = getDb()
@@ -93,6 +108,25 @@ export const runs = {
         `UPDATE runs SET ended_at = ?, status = ?, steps = ?, cost_usd = ?, outcome_json = ? WHERE id = ?`,
       )
       .run(Date.now(), status, steps, costUsd, outcome ? JSON.stringify(outcome) : null, runId);
+  },
+
+  /**
+   * Park a run without touching what it already spent.
+   *
+   * `finish` takes steps and cost because a runner knows them; the standby
+   * manager does not — it is parking a run whose loop ended long ago — and
+   * passing zeros would erase the step count and the dollars off a run that
+   * really did do forty things. The Run Log is the trust surface (§8.5) and a
+   * trust surface that forgets what a run cost is worth less than one that
+   * says nothing.
+   */
+  park(runId: number, outcome: RunOutcome): void {
+    getDb()
+      .prepare(
+        `UPDATE runs SET ended_at = ?, status = 'needs_human', outcome_json = ? WHERE id = ?`,
+      )
+      .run(Date.now(), JSON.stringify(outcome), runId);
+    log.warn('runs', 'run parked', { runId, summary: outcome.summary });
   },
 
   /** Live progress, so a crashed app leaves a run log that is accurate up to
@@ -176,6 +210,103 @@ export const runs = {
           string,
           unknown
         >[]);
+  },
+
+  // ── M4: standby (PRD §6.6) ──────────────────────────────────────────────
+  //
+  // The row is the schedule. Nothing about a pending wakeup lives in memory,
+  // which is the whole reason §6.6 says "survives app restart" — a timer in a
+  // process that quits at 6pm is not a promise to check something at 6.05.
+
+  /** Every wakeup with its run, newest check first. Joined rather than looked
+   *  up per row so the Standby view is one query. */
+  pendingWakeups(): WakeupRow[] {
+    return getDb()
+      .prepare(
+        `SELECT w.id, w.run_id, w.fire_at, w.condition, w.interval_s, w.attempts, w.max_attempts,
+                r.goal, r.status AS run_status
+           FROM wakeups w JOIN runs r ON r.id = w.run_id
+          ORDER BY w.fire_at`,
+      )
+      .all() as WakeupRow[];
+  },
+
+  /** What is due now.
+   *
+   *  `<=` rather than a window: a Mac that slept through four checks wakes with
+   *  one overdue row, not four, because a check that did not happen has nothing
+   *  to catch up on — the condition is either true now or it is not. */
+  dueWakeups(now = Date.now()): WakeupRow[] {
+    return getDb()
+      .prepare(
+        `SELECT w.id, w.run_id, w.fire_at, w.condition, w.interval_s, w.attempts, w.max_attempts,
+                r.goal, r.status AS run_status
+           FROM wakeups w JOIN runs r ON r.id = w.run_id
+          WHERE w.fire_at <= ?
+          ORDER BY w.fire_at`,
+      )
+      .all(now) as WakeupRow[];
+  },
+
+  /** One attempt spent, and the next check scheduled. Both in one statement so
+   *  a crash between them cannot leave a wakeup that re-fires forever without
+   *  ever counting an attempt. */
+  reschedule(wakeupId: number, nextFireAt: number): void {
+    getDb()
+      .prepare('UPDATE wakeups SET attempts = attempts + 1, fire_at = ? WHERE id = ?')
+      .run(nextFireAt, wakeupId);
+  },
+
+  /** The attempt is spent and there will not be another. */
+  countAttempt(wakeupId: number): void {
+    getDb().prepare('UPDATE wakeups SET attempts = attempts + 1 WHERE id = ?').run(wakeupId);
+  },
+
+  /** Bring a scheduled check forward without touching `attempts` — the "check
+   *  now" button. The tick that follows spends the attempt, so the limit still
+   *  means what it says. */
+  makeDue(wakeupId: number, at = Date.now()): void {
+    getDb().prepare('UPDATE wakeups SET fire_at = ? WHERE id = ?').run(at, wakeupId);
+  },
+
+  clearWakeup(wakeupId: number): void {
+    getDb().prepare('DELETE FROM wakeups WHERE id = ?').run(wakeupId);
+  },
+
+  clearWakeupsFor(runId: number): void {
+    getDb().prepare('DELETE FROM wakeups WHERE run_id = ?').run(runId);
+  },
+
+  wakeup(wakeupId: number): WakeupRow | undefined {
+    return getDb()
+      .prepare(
+        `SELECT w.id, w.run_id, w.fire_at, w.condition, w.interval_s, w.attempts, w.max_attempts,
+                r.goal, r.status AS run_status
+           FROM wakeups w JOIN runs r ON r.id = w.run_id WHERE w.id = ?`,
+      )
+      .get(wakeupId) as WakeupRow | undefined;
+  },
+
+  /** The next `run_steps.idx` for a run.
+   *
+   *  The standby manager writes steps too — a wake check belongs in the Run Log
+   *  as much as a click does — and it has no runner to ask, so the index comes
+   *  from the table that owns it. */
+  nextStepIdx(runId: number): number {
+    const row = getDb()
+      .prepare('SELECT MAX(idx) AS n FROM run_steps WHERE run_id = ?')
+      .get(runId) as { n: number | null };
+    return (row.n ?? -1) + 1;
+  },
+
+  /** A waiting run coming back to life. `ended_at` is cleared because the run
+   *  has not ended — it is the same run, continuing, which is exactly what
+   *  §6.6 means by resuming with its prior context. */
+  reopen(runId: number): void {
+    getDb()
+      .prepare("UPDATE runs SET status = 'running', ended_at = NULL WHERE id = ?")
+      .run(runId);
+    log.info('runs', 'run reopened from standby', { runId });
   },
 
   /** Frames go with the run; the `run_steps` rows cascade from `runs`. */

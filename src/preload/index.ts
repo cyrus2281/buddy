@@ -63,6 +63,15 @@ const api: BuddyApi = {
   rollupNow: () => ipcRenderer.invoke(CH.rollupNow),
   readVaultFrame: (p) => ipcRenderer.invoke(CH.readVaultFrame, p),
 
+  getWakeups: () => ipcRenderer.invoke(CH.getWakeups),
+  cancelWakeup: (id) => ipcRenderer.invoke(CH.cancelWakeup, id),
+  checkWakeupsNow: () => ipcRenderer.invoke(CH.checkWakeupsNow),
+  getTimelineDays: () => ipcRenderer.invoke(CH.getTimelineDays),
+  getFramesForDay: (day, bundleId) => ipcRenderer.invoke(CH.getFramesForDay, day, bundleId),
+  deleteDay: (day) => ipcRenderer.invoke(CH.deleteDay, day),
+  askAboutMyDay: (question) => ipcRenderer.invoke(CH.askAboutMyDay, question),
+  getProviders: () => ipcRenderer.invoke(CH.getProviders),
+
   onStats: (fn) => subscribe(CH.onStats, fn),
   onFrame: (fn) => subscribe(CH.onFrame, fn),
   onFramesPurged: (fn) => subscribe(CH.onFramesPurged, fn),
@@ -80,6 +89,7 @@ const api: BuddyApi = {
   onNotesStats: (fn) => subscribe(CH.onNotesStats, fn),
   onSpend: (fn) => subscribe(CH.onSpend, fn),
   onNotesChanged: (fn) => subscribe(CH.onNotesChanged, () => fn()),
+  onWakeups: (fn) => subscribe(CH.onWakeups, fn),
   onHudShown: (fn) => subscribe(CH.hudShown, fn),
   onHudHidden: (fn) => subscribe(CH.hudHidden, fn),
 };

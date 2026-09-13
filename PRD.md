@@ -117,6 +117,14 @@ settings(key, value)                              -- never secrets; see §7.4
 
 `notes.embedding` is `NULL` in v1 and exists so vector search is a backfill job, not a migration.
 
+`wakeups` is the standby schedule and it is **the only copy** — there is no
+in-memory mirror. M4's manager polls it rather than holding a timer per row,
+because a `setTimeout` for five minutes does not fire on a Mac that slept for
+four of them, and "buddy is still there forty minutes later" is the entire claim
+of Story B. A run's saved conversation lives beside its screenshots at
+`runs/<id>/context.json` rather than in a column: it is a blob nothing queries,
+and it is deleted with the run.
+
 ### 4.1 The three note types
 
 | Type | Answers | Scope | Written by |
@@ -312,6 +320,42 @@ The `finish` tool takes:
 
 `waiting` schedules a wakeup in SQLite (survives app restart). On fire, a **cheap check** runs first: one screenshot + the condition string → **Haiku 4.5** → boolean. False reschedules and costs a fraction of a cent. True resumes the original run with its full prior context. `max_attempts` exhausted → `NEEDS_HUMAN` + a notification.
 
+**Built in M4. Five details the implementation settled:**
+
+- **The schedule is polled, not timed.** `wakePollMs` (15 s default) asks SQLite
+  what is due. A timer per wakeup would be lost to a system sleep, which is the
+  exact stretch of time standby exists to survive. An overdue row fires once, not
+  once per interval missed: a check that did not happen has nothing to catch up
+  on, because the condition is either true now or it is not.
+- **A check buddy could not run does not spend an attempt.** No key, a wedged
+  sidecar, a capture that failed, a 502 — none of those is an answer about the
+  condition, and burning one of twelve on each would turn a five-minute outage
+  into a wakeup that quietly gave up. Measured cost of a real check: **$0.0028**,
+  so twelve of them over an hour is under four cents.
+- **Resume is the same run, continuing.** Same `runs` row, `run_steps` appended
+  rather than restarted, and the saved transcript replayed into the request so
+  the model does not re-create what it already made. The wake check itself is
+  written to the run log — waiting is part of what a run did, and a log that
+  shows twenty clicks and then an hour of nothing cannot answer "was it actually
+  watching".
+- **The budgets restart on a resume; the run row stays cumulative.** A run that
+  waited forty minutes would blow a ten-minute wall clock before its first click,
+  so each attempt gets its own step, time and cost budget. The row records the
+  total across attempts, and `RunView.resumes` says how many there were.
+- **Images are stripped from the saved transcript, and the blocks are not.**
+  Writing three live screenshots to disk per wait would make the file tens of
+  megabytes of pictures of a screen that has since changed, and the resume takes
+  a fresh one as its first act. The `tool_result` blocks stay — dropping one
+  orphans its `tool_use` and invalidates the whole conversation — so what is
+  saved reads to the model exactly like an already-pruned turn. A six-screenshot
+  transcript is **1.1 KB** on disk instead of 1.2 MB.
+
+**Notifications**, and only these three: a run parked in `needs_human`, a run
+resumed from standby, and a wakeup that ran out of attempts. Each one is a moment
+where something is waiting on the user and they cannot otherwise know. A
+notification per completed run is a notification people turn off, which costs
+the three that matter.
+
 ### 6.7 Measured: goal inference
 
 From [`evals/goal-inference`](evals/goal-inference/README.md), Opus 5, `effort=high`,
@@ -473,11 +517,54 @@ Three tabs — Recap, Relations, Tasks. FTS5 search with live results. Detail vi
 ### 8.4 Timeline
 Day scrubber over a filmstrip of kept frames. Hover enlarges, click opens full-size with its app, window title, and observation. Filter by app. A visible retention countdown per day, and a "delete this day now" button.
 
+The countdown is read from `MIN(expires_at)` over the day's rows, **not** derived
+from the current `retentionDays`. Retention is stamped on a frame when it is
+written, so a user who changed the setting yesterday has frames from two regimes
+in one directory and only the rows know which is which — deriving it from the
+setting would show a number that is simply not when the files go.
+
+Days are grouped by **local** date in SQL, matching `paths.dayDir`. A UTC key
+would disagree with the vault's own directory names for part of every day west
+of Greenwich, and the symptom would be a "yesterday" holding this morning.
+
+Thumbnails load lazily through an `IntersectionObserver`: a day at 15 s intervals
+is a few hundred full-resolution PNGs behind an IPC call that base64s each one,
+and asking for all of them on mount freezes the window to show a strip of 96 px
+images.
+
+### 8.4.1 Standby, on Home
+
+A pending wakeup is otherwise invisible — nothing is moving and the only
+evidence is a row in SQLite — so Home shows each one with the four facts a person
+actually has a question about: what it is watching for, when it next looks, how
+many looks are left, and what happens when they run out. Plus the two things
+they can do: make it look now, or stop waiting. An assistant that promises to
+watch for something and then shows nothing has made an unverifiable promise.
+
 ### 8.5 Run Log
 Every run, expandable to per-step: action, target, result, and the screenshot at that step. This is the trust surface — when buddy does something wrong, this is where the user finds out what and why.
 
 ### 8.6 Settings
 Provider keys · hotkey recorder · capture interval · retention days · exclusion list · allowlists (apps + domains) · profile defaults · budget caps · permission status with Grant buttons and live state · daily spend meter.
+
+Four of those needed a decision rather than a control:
+
+- **The provider matrix is the control's context, not a caveat under it.** §9.1
+  says Settings must make the Claude-only rule unambiguous, so the capability
+  table is rendered from `CAPABILITIES` and the Operator's availability is shown
+  with *the same sentence* `orchestrator.start()` throws. One message, one
+  author: the UI and the guard cannot drift into disagreeing about why the
+  hotkey is unavailable.
+- **`defaultProfile` can never be `leashless`,** and a stored value that says
+  otherwise is corrected on load. §7.1 says buddy never suggests it, and a
+  default is a suggestion made once and then never reconsidered.
+- **Exclusions are addable and removable; built-ins are disableable only.** A
+  window-title rule is compiled as a regex before it is saved, because an
+  invalid one silently excludes nothing, and "nothing" is what a broken privacy
+  rule looks like from outside.
+- **R2 gets a line on this screen**, as §11.1 asked: when macOS reports Screen
+  Recording granted and capture is failing anyway, Settings says so and names
+  the fix, rather than leaving the user to conclude the capture code is broken.
 
 ---
 
@@ -494,6 +581,16 @@ Each is an interface defined and used in v1 with a single implementation behind 
 | More sensors | `Sensor` interface producing T0 signals. `ScreenSensor` in v1; clipboard, calendar, and browser history are siblings. |
 | Ask-about-my-day | v1 is FTS5 + notes into context. Swapping in RAG is a `NoteSearch` implementation change. |
 
+**Ask-about-my-day needs both halves of its retrieval, and that is not obvious.**
+Search alone answers *"what did Priya want"* and returns **nothing at all** for
+*"what did I do this morning?"* — the commonest question there is, and one with
+no distinctive term to match on. So the recent recaps, open tasks and relations
+go in unconditionally alongside the FTS5 hits. The model is asked to cite note
+ids, and a citation that does not resolve to something actually sent is dropped
+rather than rendered as a chip nobody can open. An empty memory is answered
+locally, with no model call: spending money to be told there is nothing to say
+is a bad trade.
+
 ### 9.1 Provider matrix
 
 | Provider | Operator | Observer (T2/T3) | Q&A |
@@ -503,6 +600,20 @@ Each is an interface defined and used in v1 with a single implementation behind 
 | **Local / Ollama** (optional) | — not supported | yes, vision model required | yes |
 
 Computer use is Claude-only. Settings must make that unambiguous rather than letting a user configure OpenAI and wonder why activation is greyed out.
+
+**Built in M4.** OpenAI and the local runtime share one implementation — both
+speak `/chat/completions` with `response_format: json_schema`, so Ollama is the
+same client with a different base URL and no Authorization header, and neither
+needs an SDK dependency for one POST. Their output is validated against the
+**same zod schema** the Anthropic path uses: the seam is the model, not the
+validation, and a local model that "mostly" honours a schema must not be able to
+write a malformed note. The one sharp edge is OpenAI's `strict` mode, which
+requires every property in `required` and `additionalProperties: false` — zod's
+own emitter marks optionals optional, which is correct JSON Schema and a 400
+here, so the conversion normalises it.
+
+The wake check stays Anthropic-only, and deliberately: it is the one cheap-tier
+call whose output is a decision to **take the machine**.
 
 ---
 
@@ -543,6 +654,134 @@ reading what it wrote. See README, "What M3 verifies".
 Standby + wakeups with the cheap Haiku condition check · resume-with-context · notifications · Timeline · full Settings · OpenAI + local providers for observation and Q&A · ask-about-my-day · animation and polish pass · unsigned `.dmg` + self-signed identity for stable TCC.
 **Exit:** Story B works end to end and the app is pleasant to use.
 
+**Status: built and verified** — `npm run check:m4`, 41 checks. The wakeup
+surviving a database closed and reopened under it, the cheap check's reschedule
+arithmetic, three separate ways of being *unable* to look none of which spend an
+attempt, `max_attempts` exhaustion parking the run with its real step count and
+cost intact, and — the one that matters — **the resumed run's request read back
+and shown to contain the prior conversation**, with every `tool_use` still
+paired to its `tool_result`. Plus the Timeline against a real retention sweep,
+the FTS5 retrieval, the provider matrix, and the settings normalisations.
+
+**Local OCR stays cut** (M3's decision, unchanged). Nothing else on §10's cut
+list was cut: OpenAI and local providers, Timeline filters and ask-about-my-day
+all shipped.
+
+**And the M2 gap is closed.** `npm run live:run` is the one thing in the
+repository that talks to the live API — see §10.1.
+
+### 10.1 The live run — closing M2's one real gap
+
+M2 verified the whole computer-use loop through a scripted `ModelClient`. That
+covers every invariant about what the loop *does with a response* — and none
+about whether the API accepts what it *builds*. Three claims were correct in
+shape and had never met a server, and each one fails as something that reads
+like a model problem rather than a buddy problem.
+
+`npm run live:run` is the harness that closes it: a real two-app task — read two
+numbers from a TextEdit document in `~/.buddy/scratch`, add them in Calculator,
+type the total back — against a live `claude-opus-5`, with a fifth of the
+shipping wall clock and cost budgets and confirm gates auto-denied.
+
+**The final run completed the task.** `done` in **41 steps, 62 s, $0.226** —
+read 2257 and 7501 out of TextEdit, computed them in Calculator, switched back,
+typed `TOTAL: 9758`, saved, and called `finish`. The document was checked
+afterwards by the harness rather than by reading the summary, and it was right.
+(It also noticed the Calculator still showed the previous run's sum and cleared
+it first, which is the kind of thing `already_done` exists to make possible.)
+
+**The three questions, answered against the live API:**
+
+| | |
+|---|---|
+| **`toolset_name: "computer"` accepted** | Yes. 39 computer `tool_result` blocks across 7 turns in the final run, 46 across 7 in an earlier one, **zero API errors in any run**. The field is accepted exactly as `toolResult()` emits it. |
+| **`cache_read_input_tokens` non-zero** | Yes, and climbing every turn: 6,346 → 9,511 → 13,258 → 14,813 → 18,799 → 22,209 → **23,128**. The breakpoint layout in §6.5 is doing what it was designed to do; there is no silent invalidator. |
+| **Pruning does not desync pairing** | Confirmed, and measured on both sides of the prune: 7 image blocks → 4 pruned → 3 left, pairing **intact before and intact after**, and the API accepted the pruned conversation. Pruning changes nothing about pairing — which matters, because the first run *looked* like it did. |
+
+**Three things the live runs found that no scripted client could.**
+
+1. **A gate answered synchronously was silently dropped, and the run hung
+   forever.** `askUser()` emitted the `gate` event *before* installing the
+   promise's resolver, so a listener that answered immediately found no resolver,
+   got `false` back, and the promise created a line later was never settled. The
+   HUD never hit it because an answer over IPC is always a tick late. The harness
+   answers instantly, and the first live run stopped dead at step 3 holding the
+   keyboard, with no error anywhere. The resolver is now installed before the
+   event goes out.
+
+2. **A halted run leaves an unanswered batch, and M4 is the first thing that
+   ever re-sends one.** This is the finding pruning was nearly blamed for: the
+   first harness only checked pairing *after* the prune, saw seven orphans, and
+   reported it as a pruning failure. Measuring both sides showed the orphans
+   were already there. When a deny, a kill switch, or a budget halts a run
+   *inside* a batch, the loop returns without pushing that batch's results —
+   correctly, because §7.1 says the model gets no further turn. The last
+   assistant message is then carrying `tool_use` blocks nothing answered, which
+   is harmless for exactly as long as nothing sends the conversation again.
+   Standby sends it again. The API is unambiguous:
+
+   > `messages.14: tool_use ids were found without tool_result blocks
+   > immediately after… Each tool_use block must have a corresponding
+   > tool_result block in the next message.`
+
+   `sealTranscript` now answers every orphan with an `is_error` result saying
+   the block did not run — which is true, and is something the resuming model
+   should know. Merged into the following user message rather than inserted
+   before it: a partly-answered batch split across two user messages trades one
+   400 for a different one, which the first version did and `check:m4` caught.
+
+3. **A GUI calculator costs one step per digit.** The first run was given 30
+   steps — half the shipping default — and reached the right answer in Calculator
+   before running out of budget on the way back to TextEdit. `8616 + 5821 =` is
+   eleven `left_click`s. The step budget counts tool calls, not intentions, and
+   §6.5's default of 60 is not generous for a click-heavy app.
+
+**Two more were found by installing the build and running it**, which is a
+different activity again — neither the checks nor the live harnesses open a
+window:
+
+4. **The packaged app opened a blank window.** `windows.ts` resolved the preload
+   script and the renderer's HTML relative to `import.meta.url`, which is
+   correct while that module is bundled into `out/main/index.js` and wrong the
+   moment rollup hoists it into `out/main/chunks/` — then `../preload` points at
+   `out/main/preload`, which does not exist. What decided the hoist was how many
+   modules import it, and M4's `notify.ts` made it two. So the correctness of a
+   path depended on a bundler heuristic reacting to an unrelated new file, and
+   the failure was invisible in development (where the renderer is served over
+   HTTP) and silent in production, because `ERR_FILE_NOT_FOUND` goes to a
+   renderer console nobody has open. Both paths now come from
+   `app.getAppPath()`, and a failed load is logged where the app's own log will
+   show it.
+
+5. **A re-signed build cannot read its own stored API key, and said so every few
+   seconds.** `safeStorage` binds its Keychain item to the binary, and — unlike
+   the Screen Recording grant, which survives on the Designated Requirement —
+   that binding does not survive a new signature. Since `./scripts/sign-app.sh`
+   is a documented step, this happens on a normal rebuild. Every caller of
+   `secrets.get()` retried, refailed and relogged; the Observer alone does it
+   every few seconds. It is now latched, logged once with the actual
+   explanation, and surfaced in Settings as *"buddy has a stored key it cannot
+   read"* with the one action that fixes it. Which is §11.1's rule applied to
+   the other credential: a thing that looks configured, does nothing, and
+   explains itself nowhere is the failure mode to avoid.
+
+A sixth was found by the noise it made: **the M2 check suite was really
+clicking and really typing.** Its vocabulary check proved buddyd's 17 action
+names by sending each a well-formed request, so it triple-clicked at 1,1 and
+typed the letter `a` into whatever window had focus — contradicting the suite's
+own stated promise that nothing is typed and nothing is clicked, and noticed
+only when the letters turned up in a chat window. It was also the cause of a
+flaky failure two checks later: a triple-click at 1,1 opens the Apple menu, an
+open menu grabs the cursor, and `CGWarpMouseCursorPosition` then returns success
+while the pointer stays put. The probe now sends a deliberately invalid
+coordinate, which fails validation inside buddyd before anything is synthesized.
+
+One run was also parked by the guardrails exactly as designed: a click landed in
+Finder, which was not on that run's allowlist, the `off_allowlist` gate fired,
+the harness denied it, and the run stopped there rather than looking for another
+way (§7.1). That is §12.4 happening by accident, against the live API, and it
+worked.
+
 ### Honest read on the timeline
 
 M1 + M2 in two days is achievable. M3 + M4 in two more is aggressive — the notes engine is where prompt-quality iteration eats time that can't be estimated. If Day 4 runs short, cut in this order: **local OCR → OpenAI/local providers → Timeline filters → ask-about-my-day.** Do not cut guardrails, the run log, or the kill switches; they are load-bearing for a product that drives your computer.
@@ -556,7 +795,7 @@ Both profiles in v1 costs very little extra because they share §7.2's enforceme
 | # | Risk | Mitigation |
 |---|---|---|
 | **R1** | TCC does not attribute the sidecar's capture to the parent app bundle, so Screen Recording appears granted but returns black frames. | **Spiked on Day 1 — see §11.1. Outcome: the split holds; no fallback needed.** Sidecar lives in `Contents/MacOS/` and is signed with the same identity. |
-| **R2** | Ad-hoc signature changes each build and silently revokes Screen Recording. | **Reproduced during the R1 spike — see §11.1. This is not theoretical; budget for it.** `./scripts/make-signing-cert.sh` creates the free self-signed cert and is a required first-run step. Settings shows live permission state so a revocation is visible rather than mysterious. |
+| **R2** | Ad-hoc signature changes each build and silently revokes Screen Recording. | **Reproduced during the R1 spike — see §11.1. This is not theoretical; budget for it.** `./scripts/make-signing-cert.sh` creates the free self-signed cert and is a required first-run step. Settings shows live permission state so a revocation is visible rather than mysterious. **Confirmed working in M4:** the app was rebuilt (cdhash `5f81ba…` → `02649f…`), installed over the old copy, and launched straight into `OBSERVING` with both grants intact — the Designated Requirement, `identifier "com.cyrus.buddy" and certificate leaf = H"205a03e7…"`, is what stays the same. **But the Keychain does not follow it:** `safeStorage` ties its item to the binary, so a re-signed build cannot decrypt a key the previous build stored. See §10.1, finding 5. |
 | **R3** | Coordinate scale factor wrong on external displays → clicks land in the wrong place, possibly destructively. | §6.2 guard, a startup assertion that logs loudly when scale ≠ 1.0, the factor recorded per step in the run log, and attended mode as the default. |
 | **R4** | Goal inference is confidently wrong and buddy does the wrong task well. | Confidence threshold with a two-guess fallback, evidence chips so the user can check the reasoning in one glance, explicit confirmation before every run, and amendable goal text. |
 | **R5** | Observation cost runs away. | Tiered pipeline, pHash dedupe, Haiku for bulk, a hard daily cap that pauses T2/T3, and a live spend meter. |
@@ -625,3 +864,24 @@ Two consequences worth carrying into M2 and M4:
 5. All three kill switches stop an in-flight run within one turn, and using the keyboard mid-run does not.
 6. It goes to standby waiting on a condition, wakes on a timer, detects the condition, and resumes.
 7. Frames from two days ago are gone; the notes made from them are not.
+
+### 12.1 Where each one stands at the end of M4
+
+The distinction that matters below is between **run live** and **asserted
+mechanically**, and it is not a ranking — a mechanical assertion can cover cases
+a live run never reaches, and a live run can catch what no scripted client can
+(§10.1 is three examples of exactly that). What matters is that the two are not
+confused for each other.
+
+| # | Status | Evidence |
+|---|---|---|
+| **1** Recap is recognizably accurate | **Met, observed live** | buddy ran unattended on this machine for 2 h 26 m: 544 frames considered, 316 live, 228 already swept. It wrote 7 observations, 10 relations, 2 tasks and a recap naming the actual Slack thread, the actual Claude project, and the actual Spotify listening — including an open task, *"Reply to Alex confirming whether Sarah has the quarterly plan ready"*, that is a true statement about an unanswered 2:00 PM message. |
+| **2** ≥7/10 cold goals across 3 tasks | **Not run in this form** | What exists is the goal-inference eval: **30/30** across five fixtures × three runs × two modalities (prose stand-ins and real screenshots), with `profileMustNotBe` asserted hard and zero soft warns (§6.7). That is more repetitions than the criterion asks for and *not the same test* — the fixtures are reconstructions, not ten cold presses on three real tasks, and the eval README says so on its face. Stated as unmet in this exact form rather than claimed. |
+| **3** Two-app task end to end | **Met, live** | `npm run live:run`: read 2257 and 7501 from TextEdit, computed them in Calculator, typed `TOTAL: 9758` back, saved, `finish(done)` — **41 steps, 62 s, $0.226**, verified by reading the file rather than the summary. §10.1. |
+| **4** Gate confirms / parks | **Met mechanically, and once live by accident** | The full matrix is asserted in `check:m2` across all three profiles. It also happened for real: a click landed in Finder, which was not on that run's allowlist, the `off_allowlist` gate fired, the harness denied it, and the run parked without looking for another way. |
+| **5** Kill switches stop within one turn | **Met mechanically** | `check:m2` fires each of the three mid-run against the real `AgentRunner` with seventeen more turns of work queued behind them, and shows each parking the run with its log intact — plus `BUDDY_MAGIC` discriminating buddy's own keystroke from another process's. Not re-run live in M4. |
+| **6** Standby → wake → detect → resume | **Met, live** | `npm run live:standby`, all four steps with nothing scripted: Opus 5 read `STATUS: pending` and called `finish(waiting)`; the database was **closed and reopened** and the wakeup was still there; the document was flipped to `READY`; **Haiku 4.5 saw it on the first check for $0.00214**; and **run 10** — the same run — resumed on Opus 5, appended `SHIPPED`, saved, and finished `done` at 12 cumulative steps and $0.126. |
+| **7** Old frames gone, notes kept | **Met mechanically; partially observed** | `check:m4` runs the **real** retention sweep over two days of real vault frames and shows it taking exactly the expired one, then "delete this day now" unlinking the PNGs while the note citing them survives and reports them `expired` with their app names. On the live machine, 228 of 544 frames are already tombstoned with the notes made from them intact. Only the *simulated* two-day gap is mechanical — the app has one day of real history. |
+
+**Five of seven met with a live model on this machine, one met mechanically
+against the real modules, and one not run in the form the criterion states.**

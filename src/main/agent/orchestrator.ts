@@ -5,7 +5,9 @@ import { settings } from '../settings.js';
 import { runs } from '../store/runs.js';
 import { AnthropicClient, type ModelClient } from './client.js';
 import { killSwitches } from './killswitch.js';
-import { AgentRunner } from './runner.js';
+import { AgentRunner, type ResumeRunRequest } from './runner.js';
+import type { Executor } from './executor.js';
+import { NO_ANTHROPIC_KEY } from '../providers.js';
 import type { GateAnswer, KillSwitch, PendingGate, RunStep, RunView, StartRunRequest } from '../../shared/types.js';
 
 /// One run at a time, and one place that knows which.
@@ -19,11 +21,21 @@ import type { GateAnswer, KillSwitch, PendingGate, RunStep, RunView, StartRunReq
 export class Operator extends EventEmitter {
   private current: AgentRunner | null = null;
   private clientFactory: (() => ModelClient) | null = null;
+  private executorFactory: (() => Executor) | null = null;
 
   /** Overridden in the M2 checks so the loop can be driven by a scripted model
    *  without a network or a key. */
   setClientFactory(f: (() => ModelClient) | null) {
     this.clientFactory = f;
+  }
+
+  /** Overridden in the M4 checks, which resume a run through the real
+   *  `AgentRunner` on a machine that may have no Accessibility grant. M2's
+   *  checks construct their runner directly and do not need this; M4 goes
+   *  through the Operator because "the same run, continuing" is a fact about
+   *  the orchestrator's bookkeeping as much as the runner's. */
+  setExecutorFactory(f: (() => Executor) | null) {
+    this.executorFactory = f;
   }
 
   isRunning(): boolean {
@@ -56,31 +68,15 @@ export class Operator extends EventEmitter {
       ? this.clientFactory()
       : (() => {
           const key = secrets.get('anthropic');
-          if (!key) {
-            throw new Error(
-              'No Anthropic API key. The Operator requires Claude — computer use is not ' +
-                'available from any other provider (PRD §9.1). Add a key in Settings.',
-            );
-          }
+          // One sentence with one author: `providers.operatorAvailability()`
+          // shows the user exactly this, so the Settings screen and the guard
+          // cannot disagree about why activation is unavailable (§9.1).
+          if (!key) throw new Error(NO_ANTHROPIC_KEY);
           return new AnthropicClient(key);
         })();
 
-    const runner = new AgentRunner({ client, killSwitches });
-    this.current = runner;
-
-    runner.on('update', (v: RunView) => this.emit('update', v));
-    runner.on('step', (s: RunStep) => this.emit('step', s));
-    runner.on('gate', (g: PendingGate) => this.emit('gate', g));
-    runner.on('narration', (n) => this.emit('narration', n));
-
-    // The hotkey and the sentinel arrive asynchronously; they land on the runner
-    // that was live when they fired, not on whatever is current when they are
-    // handled.
-    const onFired = (which: Parameters<typeof runner.stop>[0]) => {
-      if (runner.view().status === 'running' || runner.view().status === 'gated') runner.stop(which);
-    };
-    killSwitches.on('fired', onFired);
-
+    const runner = this.attach(this.build(client));
+    const onFired = this.armKillSwitches(runner);
     try {
       return await runner.run(req);
     } finally {
@@ -89,6 +85,66 @@ export class Operator extends EventEmitter {
       // The runner stays reachable after it ends so the HUD can show the
       // outcome; `isRunning()` is what gates a new activation.
     }
+  }
+
+  /**
+   * Come back from standby (PRD §6.6).
+   *
+   * Deliberately a separate entry point rather than a flag on `start()`: a
+   * resume does not create a run, does not go through the leashless check
+   * again — the profile was fixed before the first loop began and a run cannot
+   * escalate its own permissions (§6.1), which includes escalating them by
+   * waiting — and carries a transcript rather than a goal. One `if` inside
+   * `start()` would have hidden all three.
+   */
+  async resume(req: ResumeRunRequest): Promise<RunView> {
+    if (this.isRunning()) {
+      throw new Error('A run is already in progress, so the standby resume was skipped.');
+    }
+    const client = this.clientFactory
+      ? this.clientFactory()
+      : (() => {
+          const key = secrets.get('anthropic');
+          if (!key) throw new Error(NO_ANTHROPIC_KEY);
+          return new AnthropicClient(key);
+        })();
+
+    const runner = this.attach(this.build(client));
+    const onFired = this.armKillSwitches(runner);
+    try {
+      return await runner.resume(req);
+    } finally {
+      killSwitches.off('fired', onFired);
+      this.emit('update', runner.view());
+    }
+  }
+
+  private build(client: ModelClient): AgentRunner {
+    return new AgentRunner({
+      client,
+      killSwitches,
+      ...(this.executorFactory ? { executor: this.executorFactory() } : {}),
+    });
+  }
+
+  private attach(runner: AgentRunner): AgentRunner {
+    this.current = runner;
+    runner.on('update', (v: RunView) => this.emit('update', v));
+    runner.on('step', (s: RunStep) => this.emit('step', s));
+    runner.on('gate', (g: PendingGate) => this.emit('gate', g));
+    runner.on('narration', (n) => this.emit('narration', n));
+    return runner;
+  }
+
+  /** The hotkey and the sentinel arrive asynchronously; they land on the runner
+   *  that was live when they fired, not on whatever is current when they are
+   *  handled. */
+  private armKillSwitches(runner: AgentRunner) {
+    const onFired = (which: Parameters<typeof runner.stop>[0]) => {
+      if (runner.view().status === 'running' || runner.view().status === 'gated') runner.stop(which);
+    };
+    killSwitches.on('fired', onFired);
+    return onFired;
   }
 
   /** The Stop button, and the funnel the hotkey and the sentinel reach too. */
@@ -128,6 +184,10 @@ export class Operator extends EventEmitter {
     if (this.isRunning() && this.current?.view().id === runId) {
       throw new Error('That run is still going. Stop it first.');
     }
+    // `wakeups` cascades from `runs`, and the saved transcript goes with the
+    // run's directory — so deleting a run that was in standby really does stop
+    // buddy waiting for it, rather than leaving a check firing against a run
+    // that no longer exists.
     runs.delete(runId);
     log.info('agent', 'run deleted', { runId });
   }

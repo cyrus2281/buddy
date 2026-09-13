@@ -1243,13 +1243,37 @@ async function run() {
     });
 
     await check('the input vocabulary is exactly the 17 toolset members', async () => {
+      // **Probed with a coordinate that cannot be valid, on purpose.**
+      //
+      // The point of this check is that buddyd's vocabulary agrees with the TS
+      // list — nothing more — and the previous version proved it by sending
+      // every member a *well-formed* request. Which meant it really clicked,
+      // really right-clicked, really triple-clicked, really pressed and held
+      // the mouse button, and really typed the letter "a" into whatever window
+      // the person running the suite had focused. It contradicted this file's
+      // own promise that nothing is typed and nothing is clicked, and it was
+      // caught by the letters landing in a chat window.
+      //
+      // It also produced a flaky failure two checks later: a triple-click at
+      // 1,1 lands on the Apple menu, an open menu grabs the cursor, and
+      // `CGWarpMouseCursorPosition` then reports success while the pointer does
+      // not move — so "real CGEvent dispatch moves the pointer" failed for a
+      // reason that had nothing to do with CGEvent dispatch.
+      //
+      // `coordinate: []` fails validation inside buddyd before anything is
+      // synthesized, for every member that takes one. What still executes is
+      // `cursor_position` (a read) and `wait` (a one-second no-op).
       for (const action of COMPUTER_ACTIONS) {
-        const err = await rpcErr(rpc, 'input', { action, coordinate: [1, 1], text: 'a', scroll_direction: 'down' });
+        const err = await rpcErr(rpc, 'input', {
+          action,
+          coordinate: [],
+          start_coordinate: [],
+        });
         ok(!/unknown action/.test(err ?? ''), `${action} is in the vocabulary`);
       }
       const bogus = await rpcErr(rpc, 'input', { action: 'teleport' });
       ok(/unknown action: teleport/.test(bogus ?? ''), 'an action outside the set is a protocol error');
-      return '17 members accepted; anything else is -32602';
+      return '17 members accepted; anything else is -32602 — and nothing was dispatched';
     });
 
     await check('screenshot and zoom are routed to the capture path, not to input', async () => {
@@ -1322,7 +1346,10 @@ async function run() {
         after = await rpc('input', { action: 'cursor_position' });
         landed = after.x === 420 && after.y === 240;
       }
-      ok(landed, `the pointer is where we put it (last read ${after.x},${after.y})`);
+      // `before` is in the message too: the failure that sent us looking was a
+      // pointer pinned at 1,1 by an open menu, and "before 1,1, after 1,1" says
+      // that immediately where "after 1,1" alone does not.
+      ok(landed, `the pointer is where we put it (before ${before.x},${before.y}, last read ${after.x},${after.y})`);
 
       await rpc('input', { action: 'mouse_move', coordinate: [before.x, before.y] });
       return `pointer moved ${before.x},${before.y} → 420,240 and back`;

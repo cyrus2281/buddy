@@ -4,16 +4,18 @@ import { useBuddy } from './useBuddy.js';
 import { Hud } from './views/Hud.js';
 import { Home } from './views/Home.js';
 import { Notes } from './views/Notes.js';
+import { Timeline } from './views/Timeline.js';
 import { SettingsView } from './views/SettingsView.js';
 import { Logs } from './views/Logs.js';
 import { RunLog } from './views/RunLog.js';
 import { StatusDot, useMotionSafe } from './components/primitives.js';
 
-type Tab = 'home' | 'notes' | 'runs' | 'settings' | 'logs';
+type Tab = 'home' | 'notes' | 'timeline' | 'runs' | 'settings' | 'logs';
 
 const TABS: { id: Tab; label: string }[] = [
   { id: 'home', label: 'Home' },
   { id: 'notes', label: 'Notes' },
+  { id: 'timeline', label: 'Timeline' },
   { id: 'runs', label: 'Runs' },
   { id: 'settings', label: 'Settings' },
   { id: 'logs', label: 'Log' },
@@ -27,7 +29,9 @@ export function App({ hud }: { hud: boolean }) {
 function Shell() {
   const b = useBuddy();
   const [tab, setTab] = useState<Tab>('home');
-  const safe = useMotionSafe() && !b.settings?.reducedMotion;
+  // `useMotionSafe` now folds in the forced setting itself, so the two sources
+  // cannot disagree between this component and every other one.
+  const safe = useMotionSafe();
 
   // A user who arrives with no permissions should land where the Grant buttons
   // are, not on an empty Home.
@@ -78,7 +82,7 @@ function Shell() {
             animate={{ opacity: 1, y: 0 }}
             exit={safe ? { opacity: 0, y: -4 } : { opacity: 0 }}
             transition={safe ? { duration: 0.18, ease: 'easeOut' } : { duration: 0 }}
-            className="mx-auto max-w-3xl"
+            className={tab === 'timeline' ? 'mx-auto max-w-6xl' : 'mx-auto max-w-3xl'}
           >
             {tab === 'home' && (
               <Home
@@ -92,10 +96,14 @@ function Shell() {
                 keepRate={b.keepRate}
                 scaleWarning={b.snapshot?.scaleWarning ?? null}
                 notesVersion={b.notesVersion}
+                wakeups={b.wakeups}
+                operator={b.operator}
                 onOpenNotes={() => setTab('notes')}
+                onOpenTimeline={() => setTab('timeline')}
               />
             )}
             {tab === 'notes' && <Notes version={b.notesVersion} />}
+            {tab === 'timeline' && <Timeline purgeVersion={b.purgeVersion} />}
             {tab === 'runs' && <RunLog activeRun={b.run} />}
             {tab === 'settings' && (
               <SettingsView
@@ -104,6 +112,8 @@ function Shell() {
                 sidecar={b.sidecar}
                 spend={b.spend}
                 notesStats={b.notesStats}
+                providers={b.providers}
+                operator={b.operator}
                 update={b.update}
               />
             )}

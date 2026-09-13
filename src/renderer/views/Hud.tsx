@@ -739,10 +739,30 @@ function Ended({ run, onClose }: { run: RunView | null; onClose: () => void }) {
       <h1 className="text-[15px] leading-snug font-light text-fog-100">
         {run.haltReason ?? run.outcome?.summary ?? 'The run ended.'}
       </h1>
-      {run.outcome?.wake && (
-        <p className="text-[11px] text-fog-500">
-          Will check every {run.outcome.wake.after_s}s for: “{run.outcome.wake.condition}” (up to{' '}
-          {run.outcome.wake.max_attempts} times).
+      {/* §6.6, and the whole of Story B. The wakeup is already a row in SQLite
+          by the time this renders — so this is a statement about what buddy
+          will do, not a promise the window is holding on to. Saying that out
+          loud is the point: "you can close this" is the difference between
+          standby and a dialog someone is afraid to dismiss. */}
+      {waiting && run.outcome?.wake && (
+        <div className="rounded-xl border border-ember-500/35 bg-ember-500/5 px-3.5 py-3">
+          <p className="text-[12px] leading-snug text-ember-300">
+            Watching for: “{run.outcome.wake.condition}”
+          </p>
+          <p className="mt-1.5 text-[11px] leading-relaxed text-fog-500">
+            Looking every {Math.round(run.outcome.wake.after_s / 60) || 1} min, up to{' '}
+            {run.outcome.wake.max_attempts} times. Each look is one screenshot through a small
+            model — a fraction of a cent. buddy picks this run back up where it left off when the
+            answer is yes, and asks you if it runs out of looks.
+          </p>
+          <p className="mt-1.5 text-[11px] leading-relaxed text-fog-500">
+            You can close this, and you can quit buddy. The wait is stored, not held in this window.
+          </p>
+        </div>
+      )}
+      {run.resumes > 0 && (
+        <p className="font-mono text-[10px] text-fog-500">
+          resumed {run.resumes} time{run.resumes === 1 ? '' : 's'} from standby
         </p>
       )}
       <div className="rounded-xl border border-ink-700/60 bg-ink-950/40 px-3.5 py-2.5 font-mono text-[10px] text-fog-500">

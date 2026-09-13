@@ -3,17 +3,21 @@ import { AnimatePresence, motion } from 'framer-motion';
 import { api, formatBytes, formatDuration } from '../useBuddy.js';
 import { Button, Card, Stat, StatusDot, spring, useMotionSafe } from '../components/primitives.js';
 import { PermissionsPanel } from './Permissions.js';
+import { StandbyPanel } from '../components/standby.js';
+import { AskBox } from '../components/ask.js';
 import type {
   AnyNote,
   AppState,
   CaptureStats,
   NotesStats,
+  OperatorAvailability,
   Permissions,
   Settings,
   SidecarStatus,
   SpendReport,
   TaskRow,
   TaskStatus,
+  WakeupView,
 } from '../../shared/types.js';
 
 /// Home (PRD §8.2): what buddy has been doing, what it thinks you are working
@@ -37,7 +41,10 @@ export function Home({
   keepRate,
   scaleWarning,
   notesVersion,
+  wakeups,
+  operator,
   onOpenNotes,
+  onOpenTimeline,
 }: {
   state: AppState;
   stats: CaptureStats | null;
@@ -49,7 +56,10 @@ export function Home({
   keepRate: number | null;
   scaleWarning: string | null;
   notesVersion: number;
+  wakeups: WakeupView[];
+  operator: OperatorAvailability | null;
   onOpenNotes: () => void;
+  onOpenTimeline: () => void;
 }) {
   const safe = useMotionSafe();
   const [recap, setRecap] = useState<AnyNote | null>(null);
@@ -93,8 +103,8 @@ export function Home({
           variant="accent"
           className="!px-4 !py-2 !text-[13px]"
           onClick={() => void api.activate()}
-          disabled={state === 'ACTING'}
-          title={settings?.hotkey}
+          disabled={state === 'ACTING' || operator?.available === false}
+          title={operator?.available === false ? (operator.reason ?? undefined) : settings?.hotkey}
         >
           Activate buddy
           <kbd className="ml-1.5 font-mono text-[10px] opacity-70">
@@ -102,6 +112,24 @@ export function Home({
           </kbd>
         </Button>
       </section>
+
+      {/* §8.2's one input. Above everything else buddy has to say, because it
+          is the thing the user came here to do. */}
+      <AskBox operator={operator} />
+
+      {/* §9.1, said where it matters rather than only in Settings. Someone who
+          configured OpenAI and is looking at a greyed-out button gets the
+          reason here, in the sentence the guard itself would throw. */}
+      {operator && !operator.available && (
+        <Card className="border-ember-400/40 bg-ember-500/5 p-3.5">
+          <p className="text-[12px] leading-relaxed text-ember-300">
+            <span className="font-medium">buddy cannot take over the machine.</span>{' '}
+            {operator.reason}
+          </p>
+        </Card>
+      )}
+
+      <StandbyPanel wakeups={wakeups} />
 
       {spend?.capped && (
         <Card className="border-ember-400/40 bg-ember-500/5 p-3.5">
@@ -198,7 +226,15 @@ export function Home({
       )}
 
       <section className="flex flex-col gap-3">
-        <h3 className="text-[13px] font-medium text-fog-100">Capture</h3>
+        <div className="flex items-baseline justify-between">
+          <h3 className="text-[13px] font-medium text-fog-100">Capture</h3>
+          <button
+            onClick={onOpenTimeline}
+            className="text-[11px] text-fog-500 transition-colors hover:text-fog-100"
+          >
+            See what it saw →
+          </button>
+        </div>
         <Card className="p-5">
           <div className="grid grid-cols-2 gap-y-5 sm:grid-cols-4">
             <Stat label="Frames kept" value={stats?.kept ?? 0} sub={`${stats?.considered ?? 0} considered`} />

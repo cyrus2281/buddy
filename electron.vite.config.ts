@@ -17,6 +17,10 @@ export default defineConfig({
           'm1-checks': path.resolve('src/main/m1-checks.ts'),
           'm2-checks': path.resolve('src/main/m2-checks.ts'),
           'm3-checks': path.resolve('src/main/m3-checks.ts'),
+          'm4-checks': path.resolve('src/main/m4-checks.ts'),
+          // The one thing in the repo that talks to the live API (PRD §10, M4).
+          'live-run': path.resolve('src/main/live-run.ts'),
+          'live-standby': path.resolve('src/main/live-standby.ts'),
           // The fixture recorder needs a real Chromium renderer to screenshot,
           // so it is an Electron entry rather than a tsx script.
           record: path.resolve('evals/goal-inference/record.ts'),

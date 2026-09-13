@@ -31,11 +31,32 @@ export const OBSERVER_MODEL = 'claude-haiku-4-5';
 export const ROLLUP_MODEL = 'claude-sonnet-5';
 /** Goal inference. Measured at ~$0.024 and 8.6 s median per activation (§6.7). */
 export const INFERENCE_MODEL = 'claude-opus-5';
+/** M4. Ask-about-my-day: FTS5 hits plus the notes, no images (PRD §9). */
+export const QA_MODEL = 'claude-sonnet-5';
+/**
+ * M4. The standby condition check (PRD §6.6).
+ *
+ * Haiku by name in the PRD, and the reason is arithmetic rather than taste: a
+ * wakeup checking every five minutes for an hour is twelve calls, and at Sonnet
+ * prices with an image each that is real money spent on *not* doing anything.
+ * One downscaled screenshot and a sentence through Haiku is a fraction of a
+ * cent, which is what makes "check every five minutes, all afternoon" a feature
+ * rather than a bill.
+ */
+export const WAKE_CHECK_MODEL = 'claude-haiku-4-5';
+
+/** Models we have already said we cannot price. Latched so an unpriced model —
+ *  a local one, which genuinely costs nothing — does not produce a warning
+ *  every three minutes for the rest of the day. */
+const unpriced = new Set<string>();
 
 export function costOfCall(model: string, usage: UsageLike): number {
   const p = MODEL_PRICES[model];
   if (!p) {
-    log.warn('notes', 'no price for model; spend will under-report', { model });
+    if (!unpriced.has(model)) {
+      unpriced.add(model);
+      log.warn('notes', 'no price for model; spend will under-report', { model });
+    }
     return 0;
   }
   // Cache write/read are billed at 1.25x/0.1x of input. The Observer does not

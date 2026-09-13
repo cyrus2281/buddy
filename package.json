@@ -17,7 +17,10 @@
     "check:m2": "electron-vite build && electron out/main/m2-checks.js",
     "check:m3": "electron-vite build && electron out/main/m3-checks.js",
     "eval:record": "electron-vite build && electron out/main/record.js",
-    "eval:goal:shots": "tsx evals/goal-inference/run.ts --fixture .shot"
+    "eval:goal:shots": "tsx evals/goal-inference/run.ts --fixture .shot",
+    "check:m4": "electron-vite build && electron out/main/m4-checks.js",
+    "live:run": "electron-vite build && electron out/main/live-run.js",
+    "live:standby": "electron-vite build && electron out/main/live-standby.js"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.125.0",

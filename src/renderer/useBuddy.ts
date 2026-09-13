@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
+import { setForcedReducedMotion } from './components/primitives.js';
 import type { BuddyApi, Snapshot } from '../shared/ipc.js';
 import type {
   AppState,
@@ -7,12 +8,15 @@ import type {
   InferenceState,
   LogEntry,
   NotesStats,
+  OperatorAvailability,
   PendingGate,
   Permissions,
+  ProviderStatus,
   RunView,
   Settings,
   SidecarStatus,
   SpendReport,
+  WakeupView,
 } from '../shared/types.js';
 
 declare global {
@@ -44,6 +48,13 @@ export function useBuddy() {
   /** Bumped whenever a note changes anywhere, so every open list refetches
    *  without each one having to subscribe to the specific thing that changed. */
   const [notesVersion, setNotesVersion] = useState(0);
+  const [wakeups, setWakeups] = useState<WakeupView[]>([]);
+  const [providers, setProviders] = useState<ProviderStatus[]>([]);
+  const [operator, setOperator] = useState<OperatorAvailability | null>(null);
+  /** Bumped on every purge so the Timeline refetches. A day whose frames were
+   *  unlinked by the hourly sweep must not keep showing thumbnails of files
+   *  that are gone. */
+  const [purgeVersion, setPurgeVersion] = useState(0);
 
   useEffect(() => {
     let alive = true;
@@ -55,12 +66,16 @@ export function useBuddy() {
       setPermissions(s.permissions);
       setSidecar(s.sidecar);
       setSettings(s.settings);
+      setForcedReducedMotion(s.settings.reducedMotion);
       setState(s.state);
       setRun(s.activeRun);
       setHotkeyIssues(s.hotkeyIssues);
       setInference(s.inference);
       setNotesStats(s.notesStats);
       setSpend(s.spend);
+      setWakeups(s.wakeups);
+      setProviders(s.providers);
+      setOperator(s.operator);
       setGate(s.activeRun?.gate ?? null);
       setFrames(await api.getRecentFrames(60));
       setLogs(await api.getLogs(200));
@@ -70,7 +85,12 @@ export function useBuddy() {
       api.onStats(setStats),
       api.onPermissions(setPermissions),
       api.onSidecar(setSidecar),
-      api.onSettings(setSettings),
+      api.onSettings((next) => {
+        setSettings(next);
+        // §8: motion is disabled, not shortened, and the switch has to reach
+        // every spring rather than only the ones this component renders.
+        setForcedReducedMotion(next.reducedMotion);
+      }),
       api.onState(setState),
       api.onFrame((f) => setFrames((prev) => [f, ...prev].slice(0, 60))),
       // A purge tombstones rows and unlinks files, so the list has to be re-read
@@ -78,6 +98,7 @@ export function useBuddy() {
       // right for both "deleted everything" and "the hourly sweep took four".
       api.onFramesPurged(() => {
         void api.getRecentFrames(60).then(setFrames);
+        setPurgeVersion((v) => v + 1);
       }),
       api.onLog((e) => setLogs((prev) => [...prev, e].slice(-200))),
       // The run view carries the gate, so a gate cleared by another window (or
@@ -92,6 +113,16 @@ export function useBuddy() {
       api.onNotesStats(setNotesStats),
       api.onSpend(setSpend),
       api.onNotesChanged(() => setNotesVersion((v) => v + 1)),
+      api.onWakeups(setWakeups),
+      // A key added or removed changes what the Operator and the providers can
+      // do, and `setSecret` broadcasts settings — so the capability matrix is
+      // re-read rather than left showing what was true at mount.
+      api.onSettings(() => {
+        void api.getProviders().then((p) => {
+          setProviders(p.providers);
+          setOperator(p.operator);
+        });
+      }),
     ];
     return () => {
       alive = false;
@@ -124,6 +155,10 @@ export function useBuddy() {
     notesStats,
     spend,
     notesVersion,
+    wakeups,
+    providers,
+    operator,
+    purgeVersion,
     update,
     keepRate,
   };

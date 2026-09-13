@@ -37,6 +37,15 @@ export function describeStep(s: RunStep): string {
       return 'Ended a turn without calling a tool';
     case 'kill-switch':
       return String(s.result ?? 'Kill-switch note');
+    // M4 (§6.6). Waiting is part of what a run did, so it reads as a step
+    // rather than as an unexplained gap in the log.
+    case 'wake-check':
+      return `Checked ${input.attempt}/${input.of}: ${truncate(String(s.result ?? ''), 70)}`;
+    case 'resume':
+      return `Woke up and carried on — ${truncate(String(input.condition ?? ''), 50)}`;
+    case 'human-input':
+    case 'gate-granted':
+      return truncate(String(s.result ?? ''), 90);
     default:
       if (s.tool.includes('click') || s.tool.includes('mouse') || s.tool.includes('drag')) {
         const c = input.coordinate as number[] | undefined;

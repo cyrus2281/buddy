@@ -1,16 +1,34 @@
 import { BrowserWindow, screen, shell, app } from 'electron';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
+import fs from 'node:fs';
 import { log } from './log.js';
 
 /// The two windows. The HUD is the one that matters (PRD §8.1): frameless,
 /// always-on-top, vibrant, centred, ~560 px. Home is a normal window.
 
-const dirname = path.dirname(fileURLToPath(import.meta.url));
+/// Where the preload script and the renderer's HTML actually are.
+///
+/// **Resolved from `app.getAppPath()`, never from `import.meta.url`**, and that
+/// is a bug fix rather than a preference. The obvious version —
+/// `path.dirname(fileURLToPath(import.meta.url))` plus `../preload` — is
+/// correct exactly while this module is bundled into `out/main/index.js`, and
+/// silently wrong the moment rollup decides to hoist it into
+/// `out/main/chunks/`. Then the base is one directory deeper, `../preload`
+/// resolves to `out/main/preload`, and the packaged app opens a window that
+/// paints nothing: `ERR_FILE_NOT_FOUND` for the HTML and `ERR_MODULE_NOT_FOUND`
+/// for the preload, both only in the renderer's console where nothing is
+/// watching.
+///
+/// What decides the hoist is how many modules import this one — M4 added
+/// `notify.ts`, which made it two — so the correctness of the path depended on
+/// a bundler heuristic reacting to an unrelated file. `app.getAppPath()` is the
+/// app root in a packaged build and the project root in development, and it
+/// does not move.
+const appRoot = () => app.getAppPath();
 
-const preload = () => path.join(dirname, '../preload/index.mjs');
+const preload = () => path.join(appRoot(), 'out', 'preload', 'index.mjs');
 const devUrl = process.env.ELECTRON_RENDERER_URL;
-const rendererFile = () => path.join(dirname, '../renderer/index.html');
+const rendererFile = () => path.join(appRoot(), 'out', 'renderer', 'index.html');
 
 export const HUD_WIDTH = 560;
 const HUD_HEIGHT = 420;
@@ -25,8 +43,24 @@ export function setHudSticky(fn: () => boolean) {
 }
 
 function load(win: BrowserWindow, hash: string) {
-  if (devUrl) void win.loadURL(`${devUrl}#${hash}`);
-  else void win.loadFile(rendererFile(), { hash });
+  if (devUrl) {
+    void win.loadURL(`${devUrl}#${hash}`);
+    return;
+  }
+  const file = rendererFile();
+  // A window that fails to load its HTML is a black rectangle with a title bar,
+  // and the error goes to a renderer console nobody has open. Say it where the
+  // app's own log will show it.
+  if (!fs.existsSync(file)) {
+    log.error('windows', 'the renderer HTML is missing; the window will be blank', {
+      expected: file,
+      appPath: appRoot(),
+    });
+  }
+  win.webContents.on('did-fail-load', (_e, code, desc, url) => {
+    log.error('windows', 'the renderer failed to load', { code, desc, url });
+  });
+  void win.loadFile(file, { hash });
 }
 
 export function createHud(): BrowserWindow {
