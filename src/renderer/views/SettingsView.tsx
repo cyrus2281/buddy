@@ -402,7 +402,7 @@ export function SettingsView({
                 Unattended, with every gate open. buddy can send messages and email, delete files
                 outside its scratch directory, install software, complete a purchase, and type
                 passwords, card numbers and API keys — with nobody watching and no confirmation.
-                The app allowlist does not apply to it.
+                It has no app allowlist: the one below is for the other two profiles.
               </p>
               <p className="mt-2 text-[11px] leading-relaxed text-fog-500">
                 The guardrails are heuristics and defence in depth even when they are enforcing.
@@ -441,7 +441,7 @@ export function SettingsView({
 
       <Section
         title="Runs"
-        hint="What a run starts with when goal inference has not seeded it. The allowlist is per run and confirmed in the same keystroke as the goal — this is the fallback, and what a typed goal uses."
+        hint="What a run starts with when goal inference has not seeded it. The allowlist is per run and confirmed in the same keystroke as the goal — this is the fallback, and what a typed goal uses. It does not apply to leashless, which has no allowlist."
       >
         <Card className="flex flex-col gap-5 p-4">
           <Field

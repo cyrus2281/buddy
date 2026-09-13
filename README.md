@@ -507,6 +507,14 @@ confirmation that names what it permits, is refused by `startRun` until then, an
 is never buddy's own suggestion. The kill switches and the budgets still apply,
 and they are the only things that do. PRD §7.1 states the cost plainly.
 
+**It has no allowlist** — not one it ignores. The difference shows up in the run
+log: a list that is present and then overridden still classifies every step in a
+non-listed app as `off_allowlist` before allowing it, so a leashless run reading
+two apps filled its log with rows naming a rule that could never apply. Now a
+read is recorded as a read. Which apps it touched is still on every step, read
+from the accessibility tree at dispatch. The HUD does not show an app set for
+it, and `startRun` clears one if a caller sends it anyway.
+
 **Run screenshots outlive the daily purge**, because the Run Log is the trust
 surface and a log whose pictures vanish overnight cannot answer "what did buddy
 click". They live under `runs/<id>/`, not in the frame vault, and deleting a run

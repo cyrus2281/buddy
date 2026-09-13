@@ -75,6 +75,15 @@ export class Operator extends EventEmitter {
           return new AnthropicClient(key);
         })();
 
+    // §7.1: leashless has no allowlist. Cleared here as well as in the HUD, for
+    // the same reason the `leashlessEnabled` check lives here — the HUD is one
+    // caller of `start`, and a run that arrived from anywhere else must not end
+    // up with a list recorded against it that nothing will ever consult.
+    if (req.profile === 'leashless' && (req.allowlist.apps.length || req.allowlist.domains.length)) {
+      log.info('agent', 'cleared the allowlist for a leashless run; the profile has none');
+      req = { ...req, allowlist: { apps: [], domains: [] } };
+    }
+
     const runner = this.attach(this.build(client));
     const onFired = this.armKillSwitches(runner);
     try {

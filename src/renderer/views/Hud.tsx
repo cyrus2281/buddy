@@ -80,12 +80,18 @@ export function Hud() {
   /** §6.1: `target_apps` seeds the allowlist the user confirms in the same
    *  keystroke as the goal. Before the reading lands there is nothing to seed
    *  it with, so the configured default stands and the panel says which. */
-  const allowlist: Allowlist = reading?.target_apps.length
+  const seededAllowlist: Allowlist = reading?.target_apps.length
     ? { apps: reading.target_apps, domains: snapshot?.defaultAllowlist.domains ?? [] }
     : (snapshot?.defaultAllowlist ?? { apps: [], domains: [] });
   const allowlistSeeded = !!reading?.target_apps.length;
 
   const effectiveProfile: RunProfile = profile ?? reading?.proposed_profile ?? 'attended';
+
+  /** What the run is actually started with. Empty under leashless, because the
+   *  profile has no allowlist — sending one would put a list in the run log and
+   *  in `RunView` that nothing ever consulted. */
+  const allowlist: Allowlist =
+    effectiveProfile === 'leashless' ? { apps: [], domains: [] } : seededAllowlist;
 
   /** §7.1: leashless is not offered until it is turned on in Settings. */
   const profiles: RunProfile[] = settings?.leashlessEnabled
@@ -482,16 +488,26 @@ function Armed({
       {reading && <RiskFlags flags={reading.risk_flags} />}
 
       <div className="rounded-xl border border-ink-700/60 bg-ink-950/40 px-3.5 py-3">
-        <div className="flex items-baseline justify-between gap-3">
-          <span className="shrink-0 text-[10px] uppercase tracking-[0.09em] text-fog-500">
-            {allowlistSeeded ? 'Apps buddy may touch' : 'Allowlist (default)'}
-          </span>
-          <span className="min-w-0 flex-1 truncate text-right font-mono text-[10px] text-fog-300">
-            {allowlist.apps.length ? allowlist.apps.join(' · ') : 'none'}
-          </span>
-        </div>
+        {/* §7.1: leashless has no allowlist. Not a list that is ignored — a
+            concept that does not apply to it, so the row is not shown rather
+            than shown with a caveat. Naming an app set beside a profile that
+            will go anywhere would be the misleading half of a true sentence. */}
+        {profile !== 'leashless' && (
+          <div className="flex items-baseline justify-between gap-3">
+            <span className="shrink-0 text-[10px] uppercase tracking-[0.09em] text-fog-500">
+              {allowlistSeeded ? 'Apps buddy may touch' : 'Allowlist (default)'}
+            </span>
+            <span className="min-w-0 flex-1 truncate text-right font-mono text-[10px] text-fog-300">
+              {allowlist.apps.length ? allowlist.apps.join(' · ') : 'none'}
+            </span>
+          </div>
+        )}
         {budgets && (
-          <div className="mt-2 flex items-baseline justify-between gap-3 border-t border-ink-800 pt-2">
+          <div
+            className={`flex items-baseline justify-between gap-3 ${
+              profile === 'leashless' ? '' : 'mt-2 border-t border-ink-800 pt-2'
+            }`}
+          >
             <span className="text-[10px] uppercase tracking-[0.09em] text-fog-500">Budgets</span>
             <span className="font-mono text-[10px] text-fog-300">
               {budgets.maxSteps} steps · {Math.round(budgets.maxWallClockMs / 60_000)} min · $
@@ -505,7 +521,7 @@ function Armed({
         <p className="rounded-lg border border-rust-400/50 bg-rust-400/10 px-3 py-2.5 text-[11px] leading-relaxed text-rust-400">
           <span className="font-medium">Nothing will ask you.</span> buddy can send messages and
           email, delete files, install software, complete a purchase, and type passwords or keys,
-          with nobody watching and no confirmation. The allowlist does not apply. Stopping it is
+          with nobody watching and no confirmation. It has no allowlist. Stopping it is
           still yours — the hotkey, Stop, <span className="font-mono">~/.buddy/ABORT</span> — and
           the step, time, and cost budgets still end the run.
         </p>

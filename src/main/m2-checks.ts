@@ -721,6 +721,67 @@ async function run() {
     return 'a Send button clicked unattended with no confirmation — recorded as class `send`';
   });
 
+  await check('leashless has no allowlist, rather than one it ignores', async () => {
+    // The other two profiles classify a step in a non-allowlisted app as
+    // `off_allowlist` and then gate or deny it. Leashless used to do the same
+    // rewrite and then allow the result, which meant a run reading two apps
+    // filled its log with rows naming a rule that could never apply. The class
+    // now reflects what the action was.
+    const exec = new FakeExecutor({
+      target: { bundleId: 'com.apple.Notes', appName: 'Notes', element: plainField() },
+    });
+    const script = (t: number) =>
+      t === 0 ? turn([toolUse('type', { text: 'hello' })]) : finishTurn();
+
+    // Unattended, with an empty allowlist: Notes is outside it, so the step is
+    // `off_allowlist` and the run parks. This is the contrast the check needs.
+    const strict = runner(new ScriptedModel(script), new FakeExecutor({
+      target: { bundleId: 'com.apple.Notes', appName: 'Notes', element: plainField() },
+    }));
+    const sv = await strict.run({
+      goal: 'type',
+      profile: 'unattended',
+      allowlist: { apps: [], domains: [] },
+    });
+    eq(
+      sv.steps.find((st) => st.tool === 'type')?.verdict?.class,
+      'off_allowlist',
+      'unattended still classifies an app outside the list as off_allowlist',
+    );
+
+    const r = runner(new ScriptedModel(script), exec);
+    const v = await r.run({ goal: 'type', profile: 'leashless', allowlist: { apps: [], domains: [] } });
+    eq(v.status, 'done', 'the leashless run completed');
+    const step = v.steps.find((st) => st.tool === 'type');
+    eq(step?.verdict?.class, 'type_editor', 'and its step is recorded as what it was — typing');
+    eq(step?.verdict?.decision, 'allow', 'allowed');
+    eq(
+      v.steps.some((st) => st.verdict?.class === 'off_allowlist'),
+      false,
+      'no step is classified against a list the profile does not have',
+    );
+    // What the run touched is still on the record, from the AX read at dispatch.
+    eq(step?.verdict?.appKey, 'com.apple.Notes', 'the app is still recorded on the step');
+    return 'unattended → off_allowlist; leashless → type_editor, with the app still named';
+  });
+
+  await check('a leashless run is started with no allowlist, whoever asks', async () => {
+    // The HUD clears it, and so does `start` — the HUD is one caller, and a run
+    // arriving from anywhere else must not carry a list nothing will consult.
+    settings.update({ leashlessEnabled: true });
+    operator.setClientFactory(() => new ScriptedModel(() => finishTurn()));
+    const v = await operator.start({
+      goal: 'g',
+      profile: 'leashless',
+      allowlist: { apps: ['com.apple.Notes'], domains: ['notion.so'] },
+    });
+    eq(v.allowlist.apps.length, 0, 'the apps were cleared');
+    eq(v.allowlist.domains.length, 0, 'and the domains');
+    operator.setClientFactory(null);
+    settings.update({ leashlessEnabled: false });
+    return 'a guard that lives in a button is not a guard — §7.1, applied to the allowlist too';
+  });
+
   await check('leashless is refused unless it has been turned on in Settings', async () => {
     settings.update({ leashlessEnabled: false });
     operator.setClientFactory(() => new ScriptedModel(() => finishTurn()));
@@ -1492,6 +1553,9 @@ const el = (role: string, title: string) => ({
 });
 
 const sendEl = () => el('AXButton', 'Send');
+/** An ordinary text field — nothing the AX or keystroke rules react to, so the
+ *  only thing that can classify a step in it is the allowlist. */
+const plainField = () => el('AXTextArea', 'Body');
 
 /** The tool_result blocks of a request's newest user message — where a batch's
  *  results land, and the only place they are allowed to land. */

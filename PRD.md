@@ -422,13 +422,28 @@ Three profiles ship in v1. They share one enforcement point and differ only in a
 | Credentials, passwords, 2FA, API keys | **deny** | **deny** | allow |
 | Delete outside `~/.buddy/scratch` | **confirm** | **deny → `needs_human`** | allow |
 | Install software, change system settings | **confirm** | **deny** | allow |
-| Open an app or domain not on the list | **confirm** | **deny → `needs_human`** | allow |
+| Open an app or domain not on the list | **confirm** | **deny → `needs_human`** | n/a — no allowlist |
 
 A deny **parks the run**. buddy never routes around it, never looks for an alternate path to the same effect, and never asks the model how to proceed past it. `needs_human` is a terminal state with a notification and a preserved log.
 
 #### Leashless, and what it costs
 
 `leashless` allows **everything** — not "more than unattended", but every class, including the two that are `deny` under both other profiles. Under it buddy will send mail, delete files outside the scratch directory, install software, complete a purchase, and type an API key or a card number into a field: unattended, with nobody asked and nothing to approve.
+
+**It has no allowlist**, which is why that row reads `n/a` rather than `allow`.
+The distinction is not pedantry, and it is visible in exactly one place: the run
+log. An allowlist that is present and then ignored still classifies every step
+in an app outside it as `off_allowlist` before allowing it — so a leashless run
+reading two apps produced a log full of rows naming a rule that was never going
+to apply, and a reader had to know the policy table to discount them. With no
+list, a read is recorded as a read and typing is recorded as typing. Which apps
+the run actually touched is not lost: `appKey` and `appName` are on every
+verdict regardless of class, read from the accessibility tree at dispatch, so
+they are what was frontmost rather than what a list predicted.
+
+The HUD does not show an app set for a leashless run, and `orchestrator.start()`
+clears one if a caller sends it anyway — the same reason the `leashlessEnabled`
+check lives there rather than in a button.
 
 That is the feature, requested in those words. It is worth being exact about the price, because those two `deny` rows are not timid defaults. A sent email cannot be recalled, a purchase cannot be un-bought, and a credential typed into the wrong field is a credential that has leaked. The §7.2 signals are heuristics and defence in depth even when they are enforcing; with this column selected there is nothing between a wrong model reading and the machine except the kill switches and the budgets — both of which do still apply.
 

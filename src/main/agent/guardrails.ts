@@ -61,6 +61,7 @@ const POLICY: Record<ActionClass, Record<RunProfile, Decision>> = {
   delete:          { attended: 'confirm', unattended: 'deny',  leashless: 'allow' },
   install:         { attended: 'confirm', unattended: 'deny',  leashless: 'allow' },
   system_settings: { attended: 'confirm', unattended: 'deny',  leashless: 'allow' },
+  // leashless never produces this class: it has no allowlist to be outside of.
   off_allowlist:   { attended: 'confirm', unattended: 'deny',  leashless: 'allow' },
 };
 
@@ -73,12 +74,15 @@ export const GATES_AT_ALL: Record<RunProfile, boolean> = {
   leashless: false,
 };
 
-/** `read` and `type_editor` are "allow if app allowlisted" under unattended.
- *  The allowlist check runs first and rewrites the class to `off_allowlist`,
- *  so the table itself stays a plain lookup. Under `leashless` the rewrite
- *  still happens and `off_allowlist` still resolves to `allow` — the class is
- *  recorded on the step either way, so the run log says which apps a leashless
- *  run reached outside its own allowlist. */
+/** `read` and `type_editor` are "allow if app allowlisted" under attended and
+ *  unattended. The allowlist check runs first and rewrites the class to
+ *  `off_allowlist`, so the table itself stays a plain lookup.
+ *
+ *  **`leashless` has no allowlist**, so the rewrite is skipped entirely for it
+ *  rather than performed and then allowed — see `classify`. `off_allowlist`
+ *  keeps its `allow` in the table below because the class can still arrive from
+ *  somewhere else, and a hole in the matrix is worse than a row nothing
+ *  currently produces. */
 const ALLOWLIST_GATED: ActionClass[] = ['read', 'type_editor'];
 
 export function enforce(cls: ActionClass, profile: RunProfile): Decision {
@@ -409,7 +413,16 @@ export function classify(c: ClassifyInput): GuardVerdict {
 
   const baseClass: ActionClass = READ_ONLY_ACTIONS.has(action) ? 'read' : 'type_editor';
 
-  if (ALLOWLIST_GATED.includes(baseClass)) {
+  // `leashless` has no allowlist at all — not an allowlist that is ignored.
+  // The distinction is visible in the run log, which is the only place it could
+  // have been: with a list, every step in an app outside it was classified
+  // `off_allowlist` and then allowed, so a leashless run reading two apps
+  // produced a log full of rows naming a rule that was never going to apply.
+  // Without one, a read is recorded as a read. Which apps the run actually
+  // touched is still on every step — `appKey` and `appName` are on the verdict
+  // regardless of class, and they are read from the AX tree at dispatch, so
+  // they are what was frontmost rather than what a list predicted.
+  if (profile !== 'leashless' && ALLOWLIST_GATED.includes(baseClass)) {
     // Screenshots and waits are not "in" an app in any meaningful sense; the
     // allowlist governs acting on an app, not looking at the screen.
     const touchesApp = !['screenshot', 'zoom', 'wait', 'cursor_position'].includes(action);
