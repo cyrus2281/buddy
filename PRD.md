@@ -445,6 +445,18 @@ The HUD does not show an app set for a leashless run, and `orchestrator.start()`
 clears one if a caller sends it anyway — the same reason the `leashlessEnabled`
 check lives there rather than in a button.
 
+**The prompt says what the table says.** The Operator's system prompt describes
+the profile it is running under, and for leashless that description is *nothing
+is refused* — not the unattended wording with the allowlist paragraph left in.
+Getting this wrong is not cosmetic. A model told in the same breath that nobody
+is watching *and* that sending is refused outright does the only thing that
+sentence leaves open: it stops and announces what it will not do. Nothing
+enforced that refusal, nothing logged it, and the user who deliberately turned
+the profile on got a draft instead of a sent email. §7.2 says the prompt is not
+the mechanism — which is exactly why it must never describe a limit the
+mechanism does not have. A prompt-invented refusal is the one kind buddy can
+neither enforce nor record.
+
 That is the feature, requested in those words. It is worth being exact about the price, because those two `deny` rows are not timid defaults. A sent email cannot be recalled, a purchase cannot be un-bought, and a credential typed into the wrong field is a credential that has leaked. The §7.2 signals are heuristics and defence in depth even when they are enforcing; with this column selected there is nothing between a wrong model reading and the machine except the kill switches and the budgets — both of which do still apply.
 
 The safety here is therefore structural rather than in the table:

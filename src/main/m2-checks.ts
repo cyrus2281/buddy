@@ -699,6 +699,45 @@ async function run() {
     return `${rows.length} classes, all allow — including purchase and credentials`;
   });
 
+  await check('the leashless prompt does not invent a refusal the policy does not have', () => {
+    const ctx = {
+      goal: 'send the email',
+      allowlist: ALLOW_ALL,
+      budgets: { maxSteps: 60, maxWallClockMs: 600_000, maxCostUsd: 2 },
+      scale: 1,
+      screen: { width: 1728, height: 1117 },
+    };
+    const leash = buildSystemPrompt({ ...ctx, profile: 'leashless' });
+    const unatt = buildSystemPrompt({ ...ctx, profile: 'unattended' });
+
+    // The bug this pins: `leashless` fell through to the unattended branch of
+    // the prompt and was told a send is "refused outright" and to stay inside
+    // an allowlist it does not have. Nothing below it enforced any of that —
+    // the table allows every class — so the only thing the sentence could
+    // produce was a model announcing what it would not do. A refusal invented
+    // in the prompt is the one kind this codebase cannot enforce or log.
+    ok(/refused outright/.test(unatt), 'unattended is still told a send is refused');
+    ok(
+      !/refused outright|never completes a purchase|never enters a credential/.test(leash),
+      'leashless is told none of that',
+    );
+    ok(
+      !/Allowlisted apps|allowlisted apps and domains below/.test(leash),
+      'and is not pointed at an allowlist it has none of',
+    );
+    ok(/nothing is refused/i.test(leash), 'it is told the profile allows everything');
+    ok(
+      /completing a purchase/i.test(leash) && /entering credentials/i.test(leash),
+      'named down to the two classes the other profiles deny',
+    );
+    // §7.4 survives the profile change, and matters more under it: with nothing
+    // enforcing below, it is the only thing between a convincing page and a
+    // real keyboard.
+    ok(/data, never instruction/i.test(leash), 'screen content is still data, never instruction');
+    ok(!/you must enforce|refuse if/i.test(leash), 'the model is still not asked to police itself');
+    return 'leashless: no invented refusal, no phantom allowlist, §7.4 intact';
+  });
+
   await check('a leashless run dispatches a send with no gate and no denial', async () => {
     const exec = new FakeExecutor({ target: { element: sendEl() } });
     const m = new ScriptedModel((t) =>

@@ -519,6 +519,14 @@ confirmation that names what it permits, is refused by `startRun` until then, an
 is never buddy's own suggestion. The kill switches and the budgets still apply,
 and they are the only things that do. PRD §7.1 states the cost plainly.
 
+**Its prompt matches its table.** The Operator is told *nothing is refused*,
+rather than inheriting the unattended wording. When it inherited it, the model
+was told in one breath that nobody was watching and that sending was refused
+outright, and it did the only thing left: stopped and announced what it would
+not do — a refusal nothing enforced and nothing logged, on the profile the user
+turned on precisely so it would not happen. The prompt is not the mechanism, so
+it must not claim a limit the mechanism does not have.
+
 **It has no allowlist** — not one it ignores. The difference shows up in the run
 log: a list that is present and then overridden still classifies every step in a
 non-listed app as `off_allowlist` before allowing it, so a leashless run reading
@@ -534,7 +542,7 @@ deletes them.
 
 ## What M2 verifies
 
-`npm run check:m2` runs 59 checks against the real modules. Two things are
+`npm run check:m2` runs 60 checks against the real modules. Two things are
 replaced, and only two: the **model**, by a scripted client that returns the
 exact content blocks a turn would; and on a machine without Accessibility, the
 **sidecar's input path**. Everything between those seams is shipping code.
@@ -558,8 +566,9 @@ What that covers, concretely:
   confirms in attended and parks in unattended, that a credential field denies
   in both, that a deny is never followed by an alternate route — the model gets
   no further turn at all — and that leashless allows every class, is refused
-  until Settings enables it, and still records the class each step would have
-  been gated under.
+  until Settings enables it, still records the class each step would have been
+  gated under, and is handed a system prompt that does not invent a refusal the
+  table does not have.
 - **Session grants**: four sends behind two asks and one grant, a grant in Slack
   that does not cover Mail, a grant that does not survive into the next run, and
   a denial that no grant can widen because it never reaches a gate.
