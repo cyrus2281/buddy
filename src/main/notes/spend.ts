@@ -41,6 +41,7 @@ const ZERO_TIERS: Record<SpendTier, number> = {
   operator: 0,
   'wake-check': 0,
   qa: 0,
+  test: 0,
 };
 
 export class SpendMeter extends EventEmitter {

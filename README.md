@@ -143,7 +143,7 @@ crash loop.
 | `npm run check:m1` | The M1 exit-criteria checks (15 of them) |
 | `npm run check:m2` | The M2 exit-criteria checks (66 of them) |
 | `npm run check:m3` | The M3 exit-criteria checks (66 of them) |
-| `npm run check:m4` | The M4 exit-criteria checks (41 of them) |
+| `npm run check:m4` | The M4 exit-criteria checks (50 of them) |
 | `npm run check:voice` | The "hey buddy" checks (21 of them) — matcher, routing, the listener, and the real `buddyd` |
 | `npm run check:memory` | The M5 checks (39 of them) — the real embedder, the real sqlite-vec index, retrieval quality on a benchmark, learning through a scripted rollup |
 | `npm run live:run` | One real two-app run against a live Opus 5 (needs `ANTHROPIC_API_KEY`) |
@@ -497,9 +497,22 @@ call. Spend is priced by the first-party id found *inside* the name, so
 `dailyCapUsd` is a safety control, and a cap where every call costs $0 is a cap
 that is off.
 
+**Each configured provider has a Test connection button.** It makes one tiny
+real call per *distinct* model id, through the configured host and key, and says
+what failed in words that name the thing to change: a rejected key (401), a
+model id the endpoint does not serve (404 — "either the id or the URL is
+wrong"), nothing listening on the port, a host that does not resolve. Anthropic
+probes every id the six roles use, and each line names the roles that id
+serves, because the gateway case is exactly the one where five roles connect and
+the sixth does not. The OpenAI and local paths are tested the way buddy uses
+them — a JSON-schema request validated by zod — since a local model that answers
+"hello" but ignores `response_format` would pass a chat ping and then fail every
+observation. Probes do not retry (a retry hides a flaky gateway), and they are
+metered under *connection tests*.
+
 ## What M4 verifies
 
-`npm run check:m4` runs 41 checks against the real modules, with the same one
+`npm run check:m4` runs 50 checks against the real modules, with the same one
 thing replaced as M2 and M3: the **model**. The `StandbyManager`, the
 `AgentRunner`'s resume path, the `Operator`, the store, the transcript
 serialisation, the Timeline queries, the retention sweep and the FTS5 retrieval

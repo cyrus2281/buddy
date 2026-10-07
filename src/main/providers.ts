@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import Anthropic from '@anthropic-ai/sdk';
 import { log } from './log.js';
 import { secrets } from './secrets.js';
 import { settings } from './settings.js';
@@ -12,10 +13,13 @@ import {
 } from './notes/model.js';
 import { DEFAULT_SETTINGS } from '../shared/types.js';
 import type {
+  AnthropicRole,
   OperatorAvailability,
   ProviderCapabilities,
   ProviderId,
+  ProviderProbe,
   ProviderStatus,
+  ProviderTestResult,
 } from '../shared/types.js';
 
 /// The `Provider` seam (PRD §9), with the one capability flag that actually
@@ -193,7 +197,7 @@ export class OpenAICompatibleClient implements StructuredClient {
 
     if (!res.ok) {
       const text = await res.text().catch(() => '');
-      throw new Error(`${this.opts.label} returned ${res.status}: ${text.slice(0, 400)}`);
+      throw new ProviderHttpError(`${this.opts.label} returned ${res.status}: ${text.slice(0, 400)}`, res.status);
     }
 
     const json = (await res.json()) as {
@@ -237,6 +241,18 @@ export class OpenAICompatibleClient implements StructuredClient {
       costUsd: costOfCall(req.model, usage),
       ms: Date.now() - t0,
     };
+  }
+}
+
+/** A non-2xx from an OpenAI-compatible endpoint, with the status kept as a
+ *  number so Settings' connection test can say *which* failure it was rather
+ *  than parsing it back out of a sentence. */
+export class ProviderHttpError extends Error {
+  constructor(
+    message: string,
+    readonly status: number,
+  ) {
+    super(message);
   }
 }
 
@@ -333,4 +349,259 @@ export function clientFor(role: 'observe' | 'rollup' | 'qa'): {
     provider: id,
     model,
   };
+}
+
+// ── Test connection ──────────────────────────────────────────────────────────
+
+/**
+ * Settings' **Test** button: one tiny real call per model id, through the same
+ * host, key and model buddy would use, with the failure said in words a person
+ * can act on.
+ *
+ * The configuration it checks is exactly the kind that fails late and quietly.
+ * A wrong gateway model id surfaces as a T2 observation that never lands, three
+ * minutes after the change, as one warning line in the log; a revoked key
+ * surfaces at the hotkey, which is the worst moment to find out. A button that
+ * answers "does this work?" while the person is still looking at the field they
+ * just edited is the cheap fix.
+ *
+ * **Anthropic probes every distinct id, not one.** The six roles carry their
+ * own ids (§9.1), and the gateway case is precisely the one where five of them
+ * resolve and the sixth 404s. Roles sharing an id share a probe, and the result
+ * names every role that id serves, so "observe and wake are broken" reads off
+ * the screen rather than out of a log.
+ *
+ * **The OpenAI-compatible path is tested the way buddy uses it**: a JSON-schema
+ * request validated by zod. An endpoint that answers chat but ignores
+ * `response_format` passes a "hello" and then fails every observation; that is
+ * the most common way a local model is wrong for this job, so it is what the
+ * test asks.
+ *
+ * Every probe is metered. It is a few hundredths of a cent, and the spend meter
+ * promises the whole truth.
+ */
+export interface ProbeDeps {
+  /** Injected in the checks, which have no Keychain to read. */
+  key?: (name: 'anthropic' | 'openai') => string | null;
+  /** The spend meter. Called once per probe that reached a model. */
+  record?: (costUsd: number) => void;
+  timeoutMs?: number;
+}
+
+const PROBE_TIMEOUT_MS = 20_000;
+
+const ANTHROPIC_ROLES: AnthropicRole[] = ['operator', 'inference', 'observe', 'rollup', 'qa', 'wake'];
+
+/** The probe's own schema: small enough that any model honouring JSON schema
+ *  at all can fill it, and strict enough that one which does not is caught. */
+const ProbeSchema = z.object({ ok: z.boolean() });
+
+const PROBE_PROMPT = 'This is a connection test. Reply with OK.';
+
+export async function testProvider(id: ProviderId, deps: ProbeDeps = {}): Promise<ProviderTestResult> {
+  const key = deps.key ?? ((name) => secrets.get(name));
+  const timeoutMs = deps.timeoutMs ?? PROBE_TIMEOUT_MS;
+  const s = settings.get();
+  const testedAt = Date.now();
+
+  if (id === 'anthropic') {
+    const endpoint = anthropicBaseUrl() ?? 'https://api.anthropic.com';
+    const apiKey = key('anthropic');
+    if (!apiKey) {
+      return { provider: id, endpoint, ok: false, probes: [], skipped: 'No Anthropic key is stored, so there is nothing to test.', testedAt };
+    }
+    const byModel = new Map<string, AnthropicRole[]>();
+    for (const role of ANTHROPIC_ROLES) {
+      const model = anthropicModel(role);
+      byModel.set(model, [...(byModel.get(model) ?? []), role]);
+    }
+    const client = new Anthropic({
+      apiKey,
+      // A test that retries hides exactly what it was asked to find: a flaky
+      // gateway looks healthy after the SDK's second attempt.
+      maxRetries: 0,
+      timeout: timeoutMs,
+      ...(anthropicBaseUrl() ? { baseURL: anthropicBaseUrl()! } : {}),
+    });
+    const probes = await Promise.all(
+      [...byModel].map(async ([model, roles]): Promise<ProviderProbe> => {
+        const t0 = Date.now();
+        try {
+          const res = await client.messages.create({
+            model,
+            max_tokens: 8,
+            messages: [{ role: 'user', content: PROBE_PROMPT }],
+          });
+          const costUsd = costOfCall(model, res.usage);
+          deps.record?.(costUsd);
+          return { model, roles, ok: true, ms: Date.now() - t0, status: 200, error: null, costUsd };
+        } catch (e) {
+          const status = e instanceof Anthropic.APIError && typeof e.status === 'number' ? e.status : null;
+          return {
+            model,
+            roles,
+            ok: false,
+            ms: Date.now() - t0,
+            status,
+            error: explainProbeFailure(e, { status, endpoint, model, provider: 'Anthropic', timeoutMs }),
+            costUsd: 0,
+          };
+        }
+      }),
+    );
+    return finishTest(id, endpoint, probes, testedAt);
+  }
+
+  const roles = [
+    ...(s.observerProvider === id ? ['observe', 'rollup'] : []),
+    ...(s.qaProvider === id ? ['qa'] : []),
+  ];
+
+  if (id === 'openai') {
+    const endpoint = openaiBaseUrl();
+    const apiKey = key('openai');
+    if (!apiKey) {
+      return { provider: id, endpoint, ok: false, probes: [], skipped: 'No OpenAI key is stored, so there is nothing to test.', testedAt };
+    }
+    const probe = await probeCompatible(
+      new OpenAICompatibleClient({ baseUrl: endpoint, apiKey, label: 'OpenAI' }),
+      { model: s.openaiModel.trim(), roles, endpoint, provider: 'OpenAI', timeoutMs, record: deps.record },
+    );
+    return finishTest(id, endpoint, [probe], testedAt);
+  }
+
+  const endpoint = s.localBaseUrl.trim();
+  if (!endpoint || !s.localModel.trim()) {
+    return {
+      provider: id,
+      endpoint: endpoint || '(none)',
+      ok: false,
+      probes: [],
+      skipped: 'Set an endpoint and a model first.',
+      testedAt,
+    };
+  }
+  const probe = await probeCompatible(
+    new OpenAICompatibleClient({ baseUrl: endpoint, apiKey: null, label: `local (${s.localModel})` }),
+    { model: s.localModel.trim(), roles, endpoint, provider: 'The local runtime', timeoutMs, record: deps.record },
+  );
+  return finishTest(id, endpoint, [probe], testedAt);
+}
+
+async function probeCompatible(
+  client: OpenAICompatibleClient,
+  o: {
+    model: string;
+    roles: string[];
+    endpoint: string;
+    provider: string;
+    timeoutMs: number;
+    record?: (costUsd: number) => void;
+  },
+): Promise<ProviderProbe> {
+  const t0 = Date.now();
+  try {
+    const res = await client.parse({
+      model: o.model,
+      system: 'Answer with a JSON object {"ok": true}.',
+      content: [{ type: 'text', text: PROBE_PROMPT }],
+      schema: ProbeSchema,
+      maxTokens: 64,
+      signal: AbortSignal.timeout(o.timeoutMs),
+    });
+    o.record?.(res.costUsd);
+    return { model: o.model, roles: o.roles, ok: true, ms: Date.now() - t0, status: 200, error: null, costUsd: res.costUsd };
+  } catch (e) {
+    const status = e instanceof ProviderHttpError ? e.status : null;
+    return {
+      model: o.model,
+      roles: o.roles,
+      ok: false,
+      ms: Date.now() - t0,
+      status,
+      error: explainProbeFailure(e, { status, endpoint: o.endpoint, model: o.model, provider: o.provider, timeoutMs: o.timeoutMs }),
+      costUsd: 0,
+    };
+  }
+}
+
+function finishTest(
+  provider: ProviderId,
+  endpoint: string,
+  probes: ProviderProbe[],
+  testedAt: number,
+): ProviderTestResult {
+  const ok = probes.length > 0 && probes.every((p) => p.ok);
+  log.info('providers', 'connection test', {
+    provider,
+    endpoint,
+    ok,
+    probes: probes.map((p) => `${p.model}:${p.ok ? 'ok' : (p.status ?? 'unreachable')}`),
+  });
+  return { provider, endpoint, ok, probes, skipped: null, testedAt };
+}
+
+/**
+ * One sentence per failure, naming the thing to change.
+ *
+ * The raw error is kept on the end because a gateway's own message is often
+ * the most specific fact available — but it goes after the explanation, since
+ * "404 not_found_error" on its own does not say whether the model id or the
+ * URL is the wrong one.
+ */
+export function explainProbeFailure(
+  e: unknown,
+  c: { status: number | null; endpoint: string; model: string; provider: string; timeoutMs: number },
+): string {
+  const err = e as { message?: string; name?: string; cause?: { code?: string; message?: string } };
+  const raw = (err?.message ?? String(e)).replace(/\s+/g, ' ').trim().slice(0, 200);
+  const detail = raw ? ` (${raw})` : '';
+  // The SDK wraps fetch's TypeError, which wraps the socket error — so the code
+  // that actually says what happened is two causes down, under a message that
+  // says only "Connection error."
+  let code: string | null = null;
+  for (let c: unknown = e, depth = 0; c && depth < 5 && !code; c = (c as { cause?: unknown }).cause, depth++) {
+    const k = (c as { code?: unknown }).code;
+    if (typeof k === 'string') code = k;
+  }
+  code ??= /(ECONNREFUSED|ENOTFOUND|ECONNRESET|EAI_AGAIN|CERT_[A-Z_]+)/.exec(raw)?.[1] ?? null;
+
+  if (
+    err?.name === 'TimeoutError' ||
+    err?.name === 'AbortError' ||
+    e instanceof Anthropic.APIConnectionTimeoutError ||
+    /timed? ?out/i.test(raw)
+  ) {
+    return `No answer from ${c.endpoint} within ${Math.round(c.timeoutMs / 1000)} s.`;
+  }
+  if (c.status == null) {
+    if (code === 'ECONNREFUSED') return `Nothing is listening at ${c.endpoint}. Is the server running, and is the port right?`;
+    if (code === 'ENOTFOUND' || code === 'EAI_AGAIN') return `The host in ${c.endpoint} does not resolve. Check the URL.`;
+    if (code?.startsWith('CERT_')) return `${c.endpoint} presented a certificate this Mac does not trust${detail}.`;
+    if (e instanceof z.ZodError || /schema rejects|not JSON|no content|did not parse/i.test(raw)) {
+      return (
+        `${c.provider} answered, but not with JSON that fits a schema — buddy needs structured output for ` +
+        `every tier, so ${c.model} will not work here${detail}.`
+      );
+    }
+    return `Could not reach ${c.endpoint}${detail}.`;
+  }
+  switch (c.status) {
+    case 400:
+      return `${c.provider} rejected the request${detail}.`;
+    case 401:
+      return `The key was rejected (401). Paste it again, or check it is a key for ${c.endpoint}.`;
+    case 403:
+      return `The key is valid but not allowed to use ${c.model} (403)${detail}.`;
+    case 404:
+      return (
+        `Not found (404): either ${c.model} is not a model this endpoint serves, or the endpoint URL is ` +
+        `wrong${detail}.`
+      );
+    case 429:
+      return `Rate limited (429). The key and model are accepted; the account has no capacity right now.`;
+    default:
+      if (c.status >= 500) return `${c.provider} had a problem of its own (${c.status}). Try again shortly${detail}.`;
+      return `${c.provider} answered ${c.status}${detail}.`;
+  }
 }

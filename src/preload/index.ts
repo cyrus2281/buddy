@@ -71,6 +71,7 @@ const api: BuddyApi = {
   deleteDay: (day) => ipcRenderer.invoke(CH.deleteDay, day),
   askAboutMyDay: (question) => ipcRenderer.invoke(CH.askAboutMyDay, question),
   getProviders: () => ipcRenderer.invoke(CH.getProviders),
+  testProvider: (id) => ipcRenderer.invoke(CH.testProvider, id),
   getMemory: () => ipcRenderer.invoke(CH.getMemory),
   searchMemory: (query) => ipcRenderer.invoke(CH.searchMemory, query),
   teach: (text) => ipcRenderer.invoke(CH.teach, text),

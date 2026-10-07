@@ -521,7 +521,7 @@ export type RelationKind = 'person' | 'app' | 'product' | 'customer' | 'tool';
 /** Which tier of the Observer spent the money. The spend meter is per-tier
  *  because "observation cost ran away" (R5) and "one expensive run" are
  *  different problems with different fixes. */
-export type SpendTier = 't2' | 't3' | 'inference' | 'operator' | 'wake-check' | 'qa';
+export type SpendTier = 't2' | 't3' | 'inference' | 'operator' | 'wake-check' | 'qa' | 'test';
 
 /** An entity T2 saw on screen. Raw material for T3's relation merge — not yet
  *  deduped, and deliberately so: T2 is the cheap tier and should not be asked
@@ -700,6 +700,32 @@ export interface ProviderStatus {
   note: string;
   /** What the provider would actually be asked to run, per role. */
   models: { observe: string; rollup: string; qa: string };
+}
+
+/** One model id, put through one tiny real call by Settings' Test button. */
+export interface ProviderProbe {
+  model: string;
+  /** Every role that runs this id. A gateway that renames one model breaks
+   *  exactly these roles and no others, so they are named rather than implied. */
+  roles: string[];
+  ok: boolean;
+  ms: number;
+  /** The HTTP status, when the endpoint answered at all. */
+  status: number | null;
+  /** What went wrong, in a sentence naming the thing to change. */
+  error: string | null;
+  costUsd: number;
+}
+
+export interface ProviderTestResult {
+  provider: ProviderId;
+  /** Where the probes went — the configured host, or the first-party default. */
+  endpoint: string;
+  ok: boolean;
+  probes: ProviderProbe[];
+  /** Set when nothing could be tried: no key, no endpoint. Nothing was sent. */
+  skipped: string | null;
+  testedAt: number;
 }
 
 /** The state of the Operator's availability, so Settings and the HUD say the

@@ -23,6 +23,8 @@ import type {
   PendingGate,
   Permissions,
   ProviderStatus,
+  ProviderTestResult,
+  ProviderId,
   RunBudgets,
   RunStep,
   RunView,
@@ -107,6 +109,7 @@ export const CH = {
   deleteDay: 'buddy:deleteDay',
   askAboutMyDay: 'buddy:askAboutMyDay',
   getProviders: 'buddy:getProviders',
+  testProvider: 'buddy:testProvider',
 
   // M5 — buddy learns you
   getMemory: 'buddy:getMemory',
@@ -285,6 +288,9 @@ export interface BuddyApi {
   /** PRD §8.2 / §9: FTS5 over the notes, plus the notes, into context. */
   askAboutMyDay(question: string): Promise<DayAnswer>;
   getProviders(): Promise<{ providers: ProviderStatus[]; operator: OperatorAvailability }>;
+  /** Settings' Test button: one tiny real call per model id, through the
+   *  configured host and key, with any failure explained. Metered. */
+  testProvider(id: ProviderId): Promise<ProviderTestResult>;
 
   /** M5. Everything the "You" screen shows, in one round trip. */
   getMemory(): Promise<MemoryOverview>;

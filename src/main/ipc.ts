@@ -18,7 +18,7 @@ import { timeline } from './store/timeline.js';
 import { askAboutMyDay } from './notes/ask.js';
 import { memory } from './memory/service.js';
 import { semanticNotes } from './memory/recall.js';
-import { operatorAvailability, providerStatuses } from './providers.js';
+import { operatorAvailability, providerStatuses, testProvider } from './providers.js';
 import type { NotesEngine } from './notes/engine.js';
 import type { Activation } from './agent/activation.js';
 import type { StandbyManager } from './agent/standby.js';
@@ -31,6 +31,7 @@ import {
   type FactKind,
   type NoteSearchHit,
   type NoteType,
+  type ProviderId,
   type RunBudgets,
   type StartRunRequest,
   type TaskScope,
@@ -372,6 +373,9 @@ export function registerIpc(ctx: Ctx) {
     providers: providerStatuses(),
     operator: operatorAvailability(),
   }));
+  ipcMain.handle(CH.testProvider, (_e, id: ProviderId) =>
+    testProvider(id, { record: (usd) => ctx.engine.spend.record('test', usd) }),
+  );
 
   // ── M5 — buddy learns you ───────────────────────────────────────────────
 

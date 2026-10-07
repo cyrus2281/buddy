@@ -32,6 +32,7 @@
 import { app } from 'electron';
 import fs from 'node:fs';
 import os from 'node:os';
+import http from 'node:http';
 import path from 'node:path';
 import { paths } from './paths.js';
 import { log } from './log.js';
@@ -69,6 +70,7 @@ import {
   openaiBaseUrl,
   operatorAvailability,
   providerStatuses,
+  testProvider,
   zodToStrictJsonSchema,
 } from './providers.js';
 import {
@@ -1344,6 +1346,94 @@ async function run() {
     return 'strict mode is where this path 400s, and the 400 reads as a model failure';
   });
 
+  // ── Settings' Test button, against a local fake of both APIs ─────────────
+  //
+  // A real endpoint would make these checks cost money and depend on the
+  // network; the thing under test is what buddy sends and how it explains what
+  // comes back. So both wire formats are served from 127.0.0.1, and the probes
+  // go through the real Anthropic SDK and the real OpenAI-compatible client.
+
+  const fake = await fakeModelServer();
+  const closedPort = await freePort();
+
+  await check('Test connection probes every distinct Anthropic model id, once each', async () => {
+    fake.requests.length = 0;
+    settings.update({
+      anthropicBaseUrl: fake.url,
+      anthropicModels: { observe: 'missing-model', wake: 'missing-model' },
+    });
+    let spent = 0;
+    const r = await testProvider('anthropic', { key: () => 'good', record: (c) => (spent += c) });
+    const distinct = new Set(
+      (['operator', 'inference', 'observe', 'rollup', 'qa', 'wake'] as const).map((role) => anthropicModel(role)),
+    );
+    eq(r.probes.length, distinct.size, 'one probe per distinct id');
+    eq(fake.requests.length, distinct.size, 'and exactly that many requests — roles sharing an id share a probe');
+    const missing = r.probes.find((p) => p.model === 'missing-model')!;
+    ok(!!missing && !missing.ok, 'the renamed id that the gateway does not serve fails');
+    eq(missing.status, 404, 'with its status');
+    eq(missing.roles.join(','), 'observe,wake', 'naming exactly the roles it breaks');
+    ok(/model this endpoint serves|endpoint URL is wrong/.test(missing.error ?? ''), `explained: ${missing.error}`);
+    ok(r.probes.filter((p) => p.model !== 'missing-model').every((p) => p.ok), 'every other id connects');
+    eq(r.ok, false, 'one broken role makes the provider not working');
+    ok(spent > 0, 'and the probes that reached a model were metered');
+    settings.update({ anthropicBaseUrl: DEFAULT_SETTINGS.anthropicBaseUrl, anthropicModels: {} });
+    return `${r.probes.length} ids, 1 broken: "${missing.error}"`;
+  });
+
+  await check('a rejected key reads as a rejected key, not as "failed"', async () => {
+    settings.update({ anthropicBaseUrl: fake.url });
+    const r = await testProvider('anthropic', { key: () => 'revoked' });
+    ok(r.probes.every((p) => p.status === 401), 'every probe 401');
+    ok(/key was rejected/.test(r.probes[0].error ?? ''), `the sentence names the key: ${r.probes[0].error}`);
+    settings.update({ anthropicBaseUrl: DEFAULT_SETTINGS.anthropicBaseUrl });
+    return r.probes[0].error!;
+  });
+
+  await check('an endpoint nobody is listening on is named as unreachable', async () => {
+    settings.update({ anthropicBaseUrl: `http://127.0.0.1:${closedPort}` });
+    const r = await testProvider('anthropic', { key: () => 'good', timeoutMs: 5_000 });
+    eq(r.ok, false, 'not working');
+    ok(r.probes.every((p) => p.status === null), 'no status — nothing answered');
+    ok(/Nothing is listening/.test(r.probes[0].error ?? ''), `the refused socket is named, not "connection error": ${r.probes[0].error}`);
+    settings.update({ anthropicBaseUrl: DEFAULT_SETTINGS.anthropicBaseUrl });
+    return r.probes[0].error!;
+  });
+
+  await check('the OpenAI-compatible path is tested with a JSON schema, the way buddy uses it', async () => {
+    fake.requests.length = 0;
+    settings.update({ localBaseUrl: `${fake.url}/v1`, localModel: 'llava', observerProvider: 'local' });
+    const good = await testProvider('local');
+    ok(good.ok, `a model that honours the schema connects: ${good.probes[0]?.error}`);
+    eq(good.probes[0].roles.join(','), 'observe,rollup', 'and it says which roles it is serving');
+    const sent = fake.requests[0]?.body as { response_format?: { type?: string } } | undefined;
+    eq(sent?.response_format?.type, 'json_schema', 'the probe asked for json_schema output');
+
+    settings.update({ localModel: 'chat-only' });
+    const bad = await testProvider('local');
+    eq(bad.ok, false, 'a model that answers chat but ignores the schema does not pass');
+    ok(/not with JSON that fits a schema/.test(bad.probes[0].error ?? ''), `explained: ${bad.probes[0].error}`);
+    settings.update({
+      localBaseUrl: DEFAULT_SETTINGS.localBaseUrl,
+      localModel: DEFAULT_SETTINGS.localModel,
+      observerProvider: 'anthropic',
+    });
+    return 'a "hello" would pass the second model and every observation would then fail';
+  });
+
+  await check('no key means nothing is sent', async () => {
+    fake.requests.length = 0;
+    settings.update({ anthropicBaseUrl: fake.url });
+    const r = await testProvider('anthropic', { key: () => null });
+    ok(!!r.skipped, 'skipped with a reason');
+    eq(r.probes.length, 0, 'no probes');
+    eq(fake.requests.length, 0, 'and no request left the machine');
+    settings.update({ anthropicBaseUrl: DEFAULT_SETTINGS.anthropicBaseUrl });
+    return r.skipped!;
+  });
+
+  fake.close();
+
   // ═══ 9. Settings (PRD §8.6) ═══════════════════════════════════════════════
 
   await check('an unreadable stored key is reported once, not every few seconds', () => {
@@ -1527,6 +1617,68 @@ async function run() {
 
 /** A real vault frame: a PNG on disk and a row that indexes it, written through
  *  the shipping `frames.keep` so the Timeline reads what capture would write. */
+/** Both wire formats buddy speaks, served locally: the Messages API at
+ *  `/v1/messages` and OpenAI's `/v1/chat/completions`. Keys: `good` works,
+ *  anything else is a 401. Models: `missing-model` 404s; `chat-only` answers
+ *  in prose, ignoring `response_format` — the classic wrong local model. */
+async function fakeModelServer(): Promise<{
+  url: string;
+  requests: { path: string; body: unknown }[];
+  close: () => void;
+}> {
+  const requests: { path: string; body: unknown }[] = [];
+  const server = http.createServer((req, res) => {
+    let raw = '';
+    req.on('data', (c) => (raw += c));
+    req.on('end', () => {
+      const body = raw ? JSON.parse(raw) : {};
+      requests.push({ path: req.url ?? '', body });
+      const send = (status: number, payload: unknown) => {
+        res.writeHead(status, { 'content-type': 'application/json' });
+        res.end(JSON.stringify(payload));
+      };
+      if (req.url?.endsWith('/v1/messages')) {
+        if (req.headers['x-api-key'] !== 'good') {
+          return send(401, { type: 'error', error: { type: 'authentication_error', message: 'invalid x-api-key' } });
+        }
+        if (body.model === 'missing-model') {
+          return send(404, { type: 'error', error: { type: 'not_found_error', message: `model: ${body.model}` } });
+        }
+        return send(200, {
+          id: 'msg_test',
+          type: 'message',
+          role: 'assistant',
+          model: body.model,
+          content: [{ type: 'text', text: 'OK' }],
+          stop_reason: 'end_turn',
+          stop_sequence: null,
+          usage: { input_tokens: 14, output_tokens: 2 },
+        });
+      }
+      if (req.url?.endsWith('/chat/completions')) {
+        const content = body.model === 'chat-only' ? 'OK! Happy to help.' : '{"ok": true}';
+        return send(200, {
+          choices: [{ message: { content } }],
+          usage: { prompt_tokens: 20, completion_tokens: 4 },
+        });
+      }
+      send(404, { error: 'no route' });
+    });
+  });
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const port = (server.address() as { port: number }).port;
+  return { url: `http://127.0.0.1:${port}`, requests, close: () => server.close() };
+}
+
+/** A port that was free a moment ago and has nothing listening on it now. */
+async function freePort(): Promise<number> {
+  const s = http.createServer();
+  await new Promise<void>((resolve) => s.listen(0, '127.0.0.1', resolve));
+  const port = (s.address() as { port: number }).port;
+  await new Promise<void>((resolve) => s.close(() => resolve()));
+  return port;
+}
+
 function keepFrame(
   ts: number,
   bundleId: string,

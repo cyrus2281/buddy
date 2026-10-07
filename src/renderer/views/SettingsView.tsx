@@ -8,7 +8,9 @@ import type {
   NotesStats,
   OperatorAvailability,
   Permissions,
+  ProviderId,
   ProviderStatus,
+  ProviderTestResult,
   RunProfile,
   SecretsStatus,
   Settings,
@@ -736,6 +738,7 @@ const TIER_LABEL: Record<SpendTier, string> = {
   operator: 'runs',
   'wake-check': 'standby checks',
   qa: 'answering questions',
+  test: 'connection tests',
 };
 
 function SpendPanel({
@@ -846,6 +849,23 @@ function ProviderPanel({
   settings: Settings;
   update: (patch: Partial<Settings>) => Promise<void>;
 }) {
+  // Per provider: the last result, or `true` while a test is in flight. Kept
+  // across edits on purpose — a result that vanished the moment the model id
+  // field changed would hide the before/after a person is comparing.
+  const [tests, setTests] = useState<Partial<Record<ProviderId, ProviderTestResult | true>>>({});
+  const runTest = (id: ProviderId) => {
+    setTests((t) => ({ ...t, [id]: true }));
+    void api
+      .testProvider(id)
+      .then((r) => setTests((t) => ({ ...t, [id]: r })))
+      .catch((e: Error) =>
+        setTests((t) => ({
+          ...t,
+          [id]: { provider: id, endpoint: '', ok: false, probes: [], skipped: e.message, testedAt: Date.now() },
+        })),
+      );
+  };
+
   return (
     <Card className="flex flex-col gap-4 p-4">
       <div className="overflow-x-auto">
@@ -892,12 +912,27 @@ function ProviderPanel({
                       {p.configured ? p.models.observe : 'not set up'}
                     </span>
                   </span>
+                  {p.configured && (
+                    <Button
+                      variant="ghost"
+                      className="mt-1 -ml-2 px-2 py-0.5 text-[11px]"
+                      disabled={tests[p.id] === true}
+                      onClick={() => runTest(p.id)}
+                    >
+                      {tests[p.id] === true ? 'Testing…' : 'Test connection'}
+                    </Button>
+                  )}
                 </td>
               </tr>
             ))}
           </tbody>
         </table>
       </div>
+
+      {providers.map((p) => {
+        const t = tests[p.id];
+        return t && t !== true ? <TestResult key={p.id} label={p.label} result={t} /> : null;
+      })}
 
       <div
         className={`rounded-lg border px-3 py-2.5 text-[11px] leading-relaxed ${
@@ -1023,6 +1058,44 @@ function ProviderPanel({
         </p>
       </details>
     </Card>
+  );
+}
+
+/** What one Test press found: a line per model id, naming the roles it serves,
+ *  so a gateway that renamed one model shows exactly which tiers it broke. */
+function TestResult({ label, result }: { label: string; result: ProviderTestResult }) {
+  const spent = result.probes.reduce((a, p) => a + p.costUsd, 0);
+  return (
+    <div
+      className={`rounded-lg border px-3 py-2.5 text-[11px] leading-relaxed ${
+        result.ok ? 'border-moss-400/30 bg-moss-400/5' : 'border-rust-400/40 bg-rust-400/5'
+      }`}
+    >
+      <div className="flex items-baseline justify-between gap-3">
+        <span className={`font-medium ${result.ok ? 'text-moss-400' : 'text-rust-400'}`}>
+          {label}: {result.skipped ? 'not tested' : result.ok ? 'connected' : 'not working'}
+        </span>
+        <span className="font-mono text-[10px] text-fog-500">
+          {result.endpoint}
+          {spent > 0 && ` · $${spent.toFixed(5)}`}
+        </span>
+      </div>
+      {result.skipped && <p className="mt-1 text-fog-300">{result.skipped}</p>}
+      <ul className="mt-1.5 flex flex-col gap-1">
+        {result.probes.map((p) => (
+          <li key={p.model} className="flex flex-col">
+            <span className="flex items-center gap-1.5">
+              <StatusDot ok={p.ok} />
+              <span className="font-mono text-fog-100">{p.model}</span>
+              <span className="text-fog-500">
+                {p.roles.length ? p.roles.join(', ') : 'not selected for anything yet'} · {p.ms} ms
+              </span>
+            </span>
+            {p.error && <span className="ml-3.5 text-rust-400">{p.error}</span>}
+          </li>
+        ))}
+      </ul>
+    </div>
   );
 }
 
