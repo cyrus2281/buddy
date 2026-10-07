@@ -1,0 +1,325 @@
+{
+ "about": "A retrieval set shaped like buddy's memory: thirty things buddy might know about one person, and the questions someone would ask that each should answer. Used by `npm run check:memory` to compare keyword search, meaning search and the hybrid buddy ships. Queries include paraphrases that share no word with their answer, and goal-inference-style queries built from window titles.",
+ "memories": [
+  {
+   "id": 0,
+   "type": "fact",
+   "text": "Reviews open pull requests on GitHub first thing every morning before opening Slack"
+  },
+  {
+   "id": 1,
+   "type": "fact",
+   "text": "Prefers dark mode in every editor and terminal"
+  },
+  {
+   "id": 2,
+   "type": "relation",
+   "text": "Priya Raman is the user's tech lead on the connectors team"
+  },
+  {
+   "id": 3,
+   "type": "relation",
+   "text": "Arjun Raman works in sales engineering and asks about customer demos"
+  },
+  {
+   "id": 4,
+   "type": "fact",
+   "text": "Writes Jira tickets with a 'Repro steps' heading and pastes logs in a code block"
+  },
+  {
+   "id": 5,
+   "type": "fact",
+   "text": "Deploys to staging with the g tool after the test suite passes"
+  },
+  {
+   "id": 6,
+   "type": "fact",
+   "text": "Keeps meeting notes in Notion under a page per week"
+  },
+  {
+   "id": 7,
+   "type": "fact",
+   "text": "Usually takes lunch around 12:30 and is idle for about 45 minutes"
+  },
+  {
+   "id": 8,
+   "type": "fact",
+   "text": "Drafts customer emails in Gmail and asks Priya to review before sending"
+  },
+  {
+   "id": 9,
+   "type": "fact",
+   "text": "Uses VS Code for TypeScript and Xcode only for the Swift sidecar"
+  },
+  {
+   "id": 10,
+   "type": "recap",
+   "text": "Filed SAM-4412 from Priya's Slack thread, then started the Q3 migration page and stopped at Blockers"
+  },
+  {
+   "id": 11,
+   "type": "recap",
+   "text": "Spent the afternoon debugging the flaky retention sweep test in the M3 checks"
+  },
+  {
+   "id": 12,
+   "type": "task",
+   "text": "Fill the Blockers section of the Q3 Migration page from Priya's 11:04 message"
+  },
+  {
+   "id": 13,
+   "type": "task",
+   "text": "Waiting on Arjun's reply about the Acme demo date before booking the room"
+  },
+  {
+   "id": 14,
+   "type": "observation",
+   "text": "Run: filed a Jira ticket from a Slack thread — done in 18 steps; pasted repro steps and linked the thread"
+  },
+  {
+   "id": 15,
+   "type": "observation",
+   "text": "Run: tried to send the weekly status email; stopped at the confirm gate because the user denied sending"
+  },
+  {
+   "id": 16,
+   "type": "fact",
+   "text": "Prefers short, direct commit messages without emoji"
+  },
+  {
+   "id": 17,
+   "type": "fact",
+   "text": "Works late on Thursdays, often until 8pm, mostly writing documentation"
+  },
+  {
+   "id": 18,
+   "type": "relation",
+   "text": "Acme Corp is a customer evaluating the event broker for their logistics platform"
+  },
+  {
+   "id": 19,
+   "type": "fact",
+   "text": "The user corrected buddy: wanted to reply to Priya in the thread, not open a new DM"
+  },
+  {
+   "id": 20,
+   "type": "fact",
+   "text": "Listens to lo-fi music on Spotify while coding"
+  },
+  {
+   "id": 21,
+   "type": "fact",
+   "text": "Plans the sprint every other Monday in Linear with the connectors team"
+  },
+  {
+   "id": 22,
+   "type": "fact",
+   "text": "Uses 1Password for credentials and never types passwords into the browser"
+  },
+  {
+   "id": 23,
+   "type": "fact",
+   "text": "Is learning Rust in the evenings with the Rustlings exercises"
+  },
+  {
+   "id": 24,
+   "type": "fact",
+   "text": "Mostly works from the 16-inch MacBook with an external 4K display"
+  },
+  {
+   "id": 25,
+   "type": "fact",
+   "text": "Writes the product requirements in Markdown in the repo, not in Google Docs"
+  },
+  {
+   "id": 26,
+   "type": "fact",
+   "text": "Asks ChatGPT for regex help occasionally"
+  },
+  {
+   "id": 27,
+   "type": "fact",
+   "text": "Groups browser tabs by project in Arc spaces"
+  },
+  {
+   "id": 28,
+   "type": "fact",
+   "text": "Sends a status update to the #sam-eng channel every Friday afternoon"
+  },
+  {
+   "id": 29,
+   "type": "fact",
+   "text": "Prefers to be asked before buddy sends any message on Slack"
+  }
+ ],
+ "queries": [
+  {
+   "q": "what does the user do when they start the day",
+   "relevant": [
+    0
+   ]
+  },
+  {
+   "q": "code review habits",
+   "relevant": [
+    0
+   ]
+  },
+  {
+   "q": "who is Priya",
+   "relevant": [
+    2,
+    8,
+    10,
+    12,
+    19
+   ]
+  },
+  {
+   "q": "how should a bug ticket be written",
+   "relevant": [
+    4,
+    14
+   ]
+  },
+  {
+   "q": "how do they ship to the staging environment",
+   "relevant": [
+    5
+   ]
+  },
+  {
+   "q": "where are meeting notes kept",
+   "relevant": [
+    6
+   ]
+  },
+  {
+   "q": "when does the user go for a meal break",
+   "relevant": [
+    7
+   ]
+  },
+  {
+   "q": "email etiquette with customers",
+   "relevant": [
+    8
+   ]
+  },
+  {
+   "q": "which editor for typescript",
+   "relevant": [
+    9
+   ]
+  },
+  {
+   "q": "what was I working on with the migration",
+   "relevant": [
+    10,
+    12
+   ]
+  },
+  {
+   "q": "what am I waiting on",
+   "relevant": [
+    13
+   ]
+  },
+  {
+   "q": "previous attempts to file tickets from chat",
+   "relevant": [
+    14
+   ]
+  },
+  {
+   "q": "sending messages without permission",
+   "relevant": [
+    15,
+    29
+   ]
+  },
+  {
+   "q": "git commit style",
+   "relevant": [
+    16
+   ]
+  },
+  {
+   "q": "evening work patterns",
+   "relevant": [
+    17,
+    23
+   ]
+  },
+  {
+   "q": "tell me about the logistics customer",
+   "relevant": [
+    18,
+    13
+   ]
+  },
+  {
+   "q": "mistakes buddy made inferring goals",
+   "relevant": [
+    19
+   ]
+  },
+  {
+   "q": "music while programming",
+   "relevant": [
+    20
+   ]
+  },
+  {
+   "q": "sprint planning",
+   "relevant": [
+    21
+   ]
+  },
+  {
+   "q": "password handling",
+   "relevant": [
+    22
+   ]
+  },
+  {
+   "q": "hardware setup and monitors",
+   "relevant": [
+    24
+   ]
+  },
+  {
+   "q": "where are specs written",
+   "relevant": [
+    25
+   ]
+  },
+  {
+   "q": "weekly team update",
+   "relevant": [
+    28
+   ]
+  },
+  {
+   "q": "Slack — #sam-eng — Friday",
+   "relevant": [
+    28
+   ]
+  },
+  {
+   "q": "Notion — Q3 Migration",
+   "relevant": [
+    10,
+    12
+   ]
+  },
+  {
+   "q": "Gmail — Draft to Acme",
+   "relevant": [
+    8,
+    18,
+    13
+   ]
+  }
+ ]
+}

@@ -9,6 +9,7 @@ import type {
   AnyNote,
   AppState,
   CaptureStats,
+  FactView,
   NotesStats,
   OperatorAvailability,
   Permissions,
@@ -43,8 +44,10 @@ export function Home({
   notesVersion,
   wakeups,
   operator,
+  memoryVersion,
   onOpenNotes,
   onOpenTimeline,
+  onOpenYou,
 }: {
   state: AppState;
   stats: CaptureStats | null;
@@ -58,12 +61,15 @@ export function Home({
   notesVersion: number;
   wakeups: WakeupView[];
   operator: OperatorAvailability | null;
+  memoryVersion: number;
   onOpenNotes: () => void;
   onOpenTimeline: () => void;
+  onOpenYou: () => void;
 }) {
   const safe = useMotionSafe();
   const [recap, setRecap] = useState<AnyNote | null>(null);
   const [tasks, setTasks] = useState<TaskRow[]>([]);
+  const [known, setKnown] = useState<{ top: FactView[]; total: number; enabled: boolean } | null>(null);
   const observing = state === 'OBSERVING';
   const since = stats?.observingSinceMs ? Date.now() - stats.observingSinceMs : 0;
 
@@ -76,6 +82,17 @@ export function Home({
   useEffect(() => {
     void refresh();
   }, [refresh, notesVersion, notesStats?.tasks, notesStats?.recaps]);
+
+  useEffect(() => {
+    void api.getMemory().then((m) => {
+      const believed = m.facts.filter((f) => (f.status === 'active' || f.status === 'pinned') && !f.dormant);
+      setKnown({
+        top: [...believed].sort((a, b) => b.effective - a.effective || b.evidence - a.evidence).slice(0, 3),
+        total: believed.length,
+        enabled: m.learning.enabled,
+      });
+    });
+  }, [memoryVersion]);
 
   return (
     <div className="flex flex-col gap-6">
@@ -217,6 +234,35 @@ export function Home({
           </div>
         )}
       </section>
+
+      {/* M5. Shown once there is something to show: three of the strongest
+          beliefs, because "buddy knows you" is a claim the person should be
+          able to check without leaving Home. */}
+      {known && known.total > 0 && (
+        <section className="flex flex-col gap-3">
+          <div className="flex items-baseline justify-between">
+            <h3 className="text-[13px] font-medium text-fog-100">What buddy knows about you</h3>
+            <button onClick={onOpenYou} className="text-[11px] text-fog-500 transition-colors hover:text-fog-100">
+              All {known.total} →
+            </button>
+          </div>
+          <Card className={`p-4 ${known.enabled ? '' : 'opacity-60'}`}>
+            <ul className="flex flex-col gap-1.5">
+              {known.top.map((f) => (
+                <li key={f.id} className="flex items-baseline justify-between gap-3">
+                  <span className="text-[12px] leading-relaxed text-fog-300">{f.statement}</span>
+                  <span className="shrink-0 font-mono text-[10px] text-fog-500">
+                    {f.status === 'pinned' ? 'confirmed' : `${Math.round(f.effective * 100)}%`}
+                  </span>
+                </li>
+              ))}
+            </ul>
+            {!known.enabled && (
+              <p className="mt-2 text-[11px] text-ember-300">Learning is off, so buddy is not using these.</p>
+            )}
+          </Card>
+        </section>
+      )}
 
       {permissions && (!permissions.screenRecording || !permissions.accessibility) && (
         <section className="flex flex-col gap-3">

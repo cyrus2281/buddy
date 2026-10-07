@@ -4,17 +4,19 @@ import { useBuddy } from './useBuddy.js';
 import { Hud } from './views/Hud.js';
 import { Home } from './views/Home.js';
 import { Notes } from './views/Notes.js';
+import { You } from './views/You.js';
 import { Timeline } from './views/Timeline.js';
 import { SettingsView } from './views/SettingsView.js';
 import { Logs } from './views/Logs.js';
 import { RunLog } from './views/RunLog.js';
 import { StatusDot, useMotionSafe } from './components/primitives.js';
 
-type Tab = 'home' | 'notes' | 'timeline' | 'runs' | 'settings' | 'logs';
+type Tab = 'home' | 'notes' | 'you' | 'timeline' | 'runs' | 'settings' | 'logs';
 
 const TABS: { id: Tab; label: string }[] = [
   { id: 'home', label: 'Home' },
   { id: 'notes', label: 'Notes' },
+  { id: 'you', label: 'You' },
   { id: 'timeline', label: 'Timeline' },
   { id: 'runs', label: 'Runs' },
   { id: 'settings', label: 'Settings' },
@@ -98,11 +100,14 @@ function Shell() {
                 notesVersion={b.notesVersion}
                 wakeups={b.wakeups}
                 operator={b.operator}
+                memoryVersion={b.memoryVersion}
                 onOpenNotes={() => setTab('notes')}
                 onOpenTimeline={() => setTab('timeline')}
+                onOpenYou={() => setTab('you')}
               />
             )}
             {tab === 'notes' && <Notes version={b.notesVersion} />}
+            {tab === 'you' && <You version={b.memoryVersion} />}
             {tab === 'timeline' && <Timeline purgeVersion={b.purgeVersion} />}
             {tab === 'runs' && <RunLog activeRun={b.run} />}
             {tab === 'settings' && (

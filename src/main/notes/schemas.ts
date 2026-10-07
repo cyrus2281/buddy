@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { FACT_KINDS, type FactKind } from '../../shared/types.js';
 
 /// Structured outputs for the two Observer tiers (PRD §5).
 ///
@@ -49,6 +50,36 @@ export const ObserveSchema = z.object({
 });
 
 export type ObserveOutput = z.infer<typeof ObserveSchema>;
+
+/** M5. One thing the rollup learned about the person. `memory/learn.ts`
+ *  decides what it actually changes. */
+export const LearningSchema = z.object({
+  op: z
+    .enum(['add', 'reinforce', 'revise', 'retract'])
+    .describe(
+      'add = new about this person. reinforce = seen again (give fact_id). revise = the fact was ' +
+        'wrong or outdated and this is the correct version (give fact_id). retract = the observations ' +
+        'contradict it and there is no replacement (give fact_id).',
+    ),
+  fact_id: z
+    .number()
+    .nullable()
+    .describe('The F-number of an existing fact from <what_buddy_has_learned>. Null only for add.'),
+  kind: z.enum(FACT_KINDS as [FactKind, ...FactKind[]]),
+  statement: z
+    .string()
+    .describe(
+      'One specific, durable sentence about the person, third person, no hedging: "Reviews open GitHub ' +
+        'PRs before opening Slack each morning." For reinforce and retract, restate the fact.',
+    ),
+  confidence: z.number().describe('0-1: how strongly this period alone supports it.'),
+  source: z
+    .enum(['observed', 'run', 'correction'])
+    .describe('observed = from the observations; run = from how a run went; correction = from a goal the person overrode.'),
+  evidence: z.string().describe('One clause naming what shows it: observation ids, a run, a correction.'),
+});
+
+export type Learning = z.infer<typeof LearningSchema>;
 
 export const RollupSchema = z.object({
   recap: z
@@ -119,6 +150,13 @@ export const RollupSchema = z.object({
     .describe(
       'Every task the observations show, including ones that just finished — a task marked done is ' +
         'what stops buddy offering to redo it.',
+    ),
+
+  learnings: z
+    .array(LearningSchema)
+    .describe(
+      'What this period teaches about the person, at most five, usually fewer and often none. ' +
+        'Reuse F-numbers from <what_buddy_has_learned>; never re-learn anything in <rejected_by_the_person>.',
     ),
 
   injection_notice: z

@@ -22,6 +22,7 @@ export class Operator extends EventEmitter {
   private current: AgentRunner | null = null;
   private clientFactory: (() => ModelClient) | null = null;
   private executorFactory: (() => Executor) | null = null;
+  private memoryProvider: ((goal: string) => string | null) | null = null;
 
   /** Overridden in the M2 checks so the loop can be driven by a scripted model
    *  without a network or a key. */
@@ -36,6 +37,12 @@ export class Operator extends EventEmitter {
    *  the orchestrator's bookkeeping as much as the runner's. */
   setExecutorFactory(f: (() => Executor) | null) {
     this.executorFactory = f;
+  }
+
+  /** M5. Set at launch to `memory.forRun`. Unset in the checks that do not
+   *  ask for it, so their prompts are exactly what they were. */
+  setMemoryProvider(f: ((goal: string) => string | null) | null) {
+    this.memoryProvider = f;
   }
 
   isRunning(): boolean {
@@ -133,6 +140,7 @@ export class Operator extends EventEmitter {
       client,
       killSwitches,
       ...(this.executorFactory ? { executor: this.executorFactory() } : {}),
+      ...(this.memoryProvider ? { memory: this.memoryProvider } : {}),
     });
   }
 

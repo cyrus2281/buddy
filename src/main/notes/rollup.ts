@@ -3,6 +3,13 @@ import { notes, relations, tasks } from '../store/notes.js';
 import { RollupSchema, type RollupOutput } from './schemas.js';
 import { ROLLUP_SYSTEM } from './prompts.js';
 import { anthropicModel, type ContentBlock, type StructuredClient } from './model.js';
+import {
+  LEARNING_OFF,
+  applyLearnings,
+  learningContext,
+  renderLearningContext,
+  type LearnSummary,
+} from '../memory/learn.js';
 import type { ObservationRow, RelationRow, TaskRow } from '../../shared/types.js';
 
 /// T3 — the rollup tier (PRD §5).
@@ -29,6 +36,8 @@ export interface RollupResult {
   ms: number;
   injectionNotice: string | null;
   observationsUsed: number;
+  /** M5. Null when learning is off. */
+  learned: LearnSummary | null;
 }
 
 function renderObservations(obs: ObservationRow[]): string {
@@ -88,11 +97,16 @@ export async function rollup(
   obs: ObservationRow[],
   reason: RollupReason,
   period: { from: number; to: number },
+  opts: { learn?: boolean } = {},
 ): Promise<RollupResult | null> {
   if (!obs.length) return null;
 
   const knownRelations = relations.all(120);
   const knownTasks = tasks.open();
+  // M5: learning rides this call rather than making its own. Built before the
+  // request so the beliefs shown are exactly the ones the reply's F-numbers
+  // can refer to.
+  const learning = opts.learn ? learningContext(obs, period.to) : null;
 
   const content: ContentBlock[] = [
     {
@@ -109,11 +123,15 @@ export async function rollup(
         renderKnownTasks(knownTasks),
         '</open_tasks>',
         '',
+        learning ? renderLearningContext(learning, period.to) : LEARNING_OFF,
+        '',
         '<observations>',
         renderObservations(obs),
         '</observations>',
         '',
-        'Write the recap, the relations, and the task states.',
+        learning
+          ? 'Write the recap, the relations, the task states, and what this period teaches about the person.'
+          : 'Write the recap, the relations, and the task states.',
       ].join('\n'),
     },
   ];
@@ -188,6 +206,17 @@ export async function rollup(
     }
   }
 
+  let learned: LearnSummary | null = null;
+  if (learning) {
+    try {
+      learned = applyLearnings(out.learnings ?? [], learning, obsIds, now);
+    } catch (e) {
+      // The recap, relations and tasks are already written; a learning that
+      // failed to merge must not take them with it.
+      log.warn('rollup', 'learning failed; the recap stands', { error: (e as Error).message });
+    }
+  }
+
   if (out.injection_notice) {
     log.warn('rollup', 'on-screen text tried to give instructions; it was not followed', {
       quote: out.injection_notice.slice(0, 200),
@@ -200,6 +229,7 @@ export async function rollup(
     observations: obs.length,
     relations: relationsTouched,
     tasks: tasksTouched,
+    ...(learned ? { learned } : {}),
     cost: res.costUsd.toFixed(4),
     ms: res.ms,
   });
@@ -212,5 +242,6 @@ export async function rollup(
     ms: res.ms,
     injectionNotice: out.injection_notice,
     observationsUsed: obs.length,
+    learned,
   };
 }

@@ -19,7 +19,7 @@ The product claim is the absence of a prompt. Every other computer-use tool asks
 ### Non-goals for v1
 
 - Windows / Linux. Signed, notarized distribution. Multi-user or cloud sync.
-- Vector search, wake-word activation, voice I/O. (All four have explicit seams — §9.) *Wake-word activation has since been built behind its seam; see §9.*
+- Vector search, wake-word activation, voice I/O. (All four have explicit seams — §9.) *Wake-word activation has since been built behind its seam; see §9.* *So has vector search, as part of M5's learning; see §4.2.*
 - Buddy operating a machine nobody is logged into, or across a lock screen.
 
 ---
@@ -113,9 +113,22 @@ runs(id, started_at, ended_at, profile, goal, status, steps, cost_usd, outcome_j
 run_steps(run_id, idx, tool, input_json, result_json, frame_path, is_error, ts)
 wakeups(id, run_id, fire_at, condition, interval_s, attempts, max_attempts)
 settings(key, value)                              -- never secrets; see §7.4
+
+-- M5 — buddy learns you (§4.2)
+facts(id, kind, statement, confidence, evidence, source, status,
+      superseded_by, created_at, updated_at, last_seen_at, source_obs_json)
+                                                  -- source: observed|told|run|corrected
+                                                  -- status: active|pinned|rejected|superseded
+episodes(id, run_id, kind, ts, updated_at, goal, inferred_goal, goal_source,
+         status, summary, apps_json, steps, cost_usd, learned_at)
+                                                  -- kind: run|correction
+app_usage(day, hour, weekday, bundle_id, app_name, seconds)
+memory_vectors(id, source, source_id, src_version, model, text, vector)
+memory_fts(text)                                  -- FTS5 over memory_vectors.text
+memory_vec(embedding float[256], source)          -- sqlite-vec accelerator, rebuilt from rows
 ```
 
-`notes.embedding` is `NULL` in v1 and exists so vector search is a backfill job, not a migration.
+`notes.embedding` is `NULL` in v1 and exists so vector search is a backfill job, not a migration. *When vector search arrived (M5) it needed vectors for observations, facts and runs as well as notes, so they all live in `memory_vectors`; the column stays `NULL`.*
 
 `wakeups` is the standby schedule and it is **the only copy** — there is no
 in-memory mirror. M4's manager polls it rather than holding a timer per row,
@@ -144,6 +157,47 @@ nobody ever changes and every task in the database reads as "session" forever.
 
 **`done` can be reopened**, and the transition is logged. Refusing it would make
 the memory uncorrectable, which is the one thing §8.3 says it must not be.
+
+### 4.2 What buddy learns (M5)
+
+Notes remember what happened. **Facts** remember who it happened to: one atomic,
+third-person sentence per row — a preference, habit, workflow, skill, project,
+relationship, goal or piece of context — with a confidence, a count of
+sightings, and where it came from.
+
+| Source | Means | First-sighting cap |
+|---|---|---|
+| `observed` | Proposed by the hourly rollup from what was on screen | 0.6 |
+| `run` | Learned from how a run went | 0.7 |
+| `corrected` | Learned from a goal the person overrode | 0.85 |
+| `told` | Said by the person ("remember that …") or edited by them | pinned |
+
+**Belief decays at read time.** The stored confidence is the belief as of the last
+sighting; everything that acts on a fact uses it decayed by age, with a half-life
+by kind (project 21 d, habit 45 d, goal and context 60 d, workflow 120 d,
+preference and relationship 180 d, skill 365 d) stretched by evidence. Below 0.25
+a fact is dormant: listed, never brought up. Each confirming sighting closes 30%
+of the gap to certainty.
+
+**The person's word is pinned.** Confirmed, told and edited facts do not decay and
+cannot be revised or retracted by a model. **Rejected facts are kept** as a list of
+things never to learn again. Credentials are refused before anything is stored.
+
+**Episodes** record every run's outcome and, separately, every *correction*: the
+goal buddy proposed and the one the person ran instead. Corrections are shown to
+later goal inference and to the rollup, and are the strongest learning signal in
+the product. Deleting a run deletes its episodes.
+
+**`app_usage`** is the week: active seconds per app per local hour, from the T0
+signal, with idle time, sleep gaps and excluded apps left out.
+
+**The memory index** holds one row per note, observation, fact and episode: the
+exact text it is searched by, and its unit vector from a bundled static embedding
+model (potion-base-8M, 256-d, computed locally). Keywords (FTS5 over that text)
+and meaning (sqlite-vec over the vectors) search the same rows, and recall fuses
+them as 0.8 × cosine + 0.2 × normalised BM25, weighted by age and belief and
+re-ranked for diversity. What is owed to the index is computed from the rows'
+`updated_at`, never hooked into writers.
 
 ---
 
@@ -607,12 +661,12 @@ Each is an interface defined and used in v1 with a single implementation behind 
 
 | Later | v1 seam |
 |---|---|
-| Vector note search | `notes.embedding` column, `EmbeddingProvider` interface, search behind `NoteSearch` (FTS5 impl). Adding sqlite-vec is a backfill job. |
+| Vector note search | **Built in M5.** `Embedder` (`memory/embed.ts`) with one implementation, a static Model2Vec model run in TypeScript; sqlite-vec as the accelerator; `hybridSearch` behind `NoteSearch`. See §4.2. |
 | Wake-word activation | **Built after M4.** `activate(source)` in `index.ts` is the seam, with the hotkey and "hey buddy" as its two triggers. `buddyd` transcribes on-device only (`Voice.swift`); `src/main/voice/` decides what was meant and where it goes; the HUD applies a stricter rule than Enter (`shared/voice.ts`). See README, "Voice". |
 | TTS / STT | `VoiceIO` interface, no-op impl. HUD already renders buddy's goal text as a discrete speakable unit. |
 | More providers | `Provider` interface with capability flags `{computerUse, vision, structuredOutput, cheapBulk}`. Anthropic is the only one with `computerUse: true`; the Operator hard-requires it and the UI says so. |
 | More sensors | `Sensor` interface producing T0 signals. `ScreenSensor` in v1; clipboard, calendar, and browser history are siblings. |
-| Ask-about-my-day | v1 is FTS5 + notes into context. Swapping in RAG is a `NoteSearch` implementation change. |
+| Ask-about-my-day | v1 is FTS5 + notes into context. Swapping in RAG is a `NoteSearch` implementation change. *M5 made that change, and added learned facts and past runs to the context.* |
 
 **Ask-about-my-day needs both halves of its retrieval, and that is not obvious.**
 Search alone answers *"what did Priya want"* and returns **nothing at all** for
@@ -826,6 +880,27 @@ Finder, which was not on that run's allowlist, the `off_allowlist` gate fired,
 the harness denied it, and the run stopped there rather than looking for another
 way (§7.1). That is §12.4 happening by accident, against the live API, and it
 worked.
+
+### M5 — buddy learns you
+
+Facts, episodes and corrections, the week, and a local semantic index over all of
+it (§4.2) · learning inside the hourly rollup with a mechanical merge · memory
+in goal inference, the Operator and Ask · the **You** screen, where every belief
+can be confirmed, rejected, edited or forgotten · "remember that …" in the Ask box
+· a learning switch that is honoured below the prompt.
+**Exit:** buddy builds a picture of the person that gets stronger with use, uses
+it at every stage that decides something, and lets the person correct any part of
+it.
+
+**Status: built and verified** — `npm run check:memory`, 39 checks, with the real
+embedding model and the real sqlite-vec index; only the language model is
+scripted. Retrieval is measured, not assumed: on `evals/memory-retrieval` hybrid
+recall reaches top-1 85% / top-3 96% / MRR 0.91 against 81% / 96% / 0.88 for
+meaning alone and 62% / 85% / 0.73 for keywords alone. The first fusion tried —
+reciprocal-rank fusion — scored *below* meaning alone and was replaced; the check
+now fails on that kind of regression. `npm run live:learn` exercises learning
+against live models in a throwaway database; it has not yet been run against the
+API.
 
 ### Honest read on the timeline
 

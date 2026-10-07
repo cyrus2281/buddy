@@ -135,6 +135,7 @@ class SettingsStore extends EventEmitter {
     // the way the user wrote it.
     out.voiceConfirmPhrases = cleanList(out.voiceConfirmPhrases);
     out.voiceEnabled = !!out.voiceEnabled;
+    out.learningEnabled = out.learningEnabled !== false;
     if (out.defaultProfile !== 'attended' && out.defaultProfile !== 'unattended') {
       // §7.1: leashless is never a default. A stored blob that says otherwise —
       // an older version, a hand-edited database — is corrected rather than

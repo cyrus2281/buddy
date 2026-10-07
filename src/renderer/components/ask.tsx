@@ -2,7 +2,8 @@ import React, { useCallback, useRef, useState } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
 import { api } from '../useBuddy.js';
 import { Card, spring, useMotionSafe } from '../components/primitives.js';
-import type { DayAnswer, OperatorAvailability } from '../../shared/types.js';
+import { isTeaching } from '../../shared/teach.js';
+import type { DayAnswer, OperatorAvailability, TeachResult } from '../../shared/types.js';
 
 /// §8.2's "single input that accepts either a question or a direct
 /// instruction", and the ask-about-my-day answer it produces.
@@ -34,16 +35,33 @@ export function AskBox({ operator }: { operator: OperatorAvailability | null }) 
   const [text, setText] = useState('');
   const [busy, setBusy] = useState(false);
   const [answer, setAnswer] = useState<DayAnswer | null>(null);
+  const [taught, setTaught] = useState<TeachResult | null>(null);
   const [error, setError] = useState<string | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const safe = useMotionSafe();
 
-  const asking = isQuestion(text);
+  const teaching = isTeaching(text);
+  const asking = !teaching && isQuestion(text);
 
   const submit = useCallback(async () => {
     const t = text.trim();
     if (!t || busy) return;
     setError(null);
+    setTaught(null);
+
+    if (isTeaching(t)) {
+      setBusy(true);
+      try {
+        const r = await api.teach(t);
+        setTaught(r);
+        if (r.fact) setText('');
+      } catch (e) {
+        setError((e as Error).message.replace(/^Error invoking remote method '[^']+': (Error: )?/, ''));
+      } finally {
+        setBusy(false);
+      }
+      return;
+    }
 
     if (!isQuestion(t)) {
       // An instruction goes where every instruction goes: the HUD, with the
@@ -69,7 +87,7 @@ export function AskBox({ operator }: { operator: OperatorAvailability | null }) 
     <div className="flex flex-col gap-3">
       <div
         className={`flex items-center gap-2 rounded-xl border bg-ink-900 px-3 py-2 transition-colors
-                    ${asking ? 'border-ember-500/50' : 'border-ink-700 focus-within:border-ink-600'}`}
+                    ${teaching ? 'border-moss-400/50' : asking ? 'border-ember-500/50' : 'border-ink-700 focus-within:border-ink-600'}`}
       >
         <input
           ref={inputRef}
@@ -81,7 +99,7 @@ export function AskBox({ operator }: { operator: OperatorAvailability | null }) 
               void submit();
             }
           }}
-          placeholder="Ask what you did, or say what you want finished…"
+          placeholder="Ask what you did, say what you want finished, or “remember that …”"
           className="min-w-0 flex-1 bg-transparent text-[13px] text-fog-100 outline-none
                      placeholder:text-fog-500/70"
         />
@@ -89,13 +107,15 @@ export function AskBox({ operator }: { operator: OperatorAvailability | null }) 
           className={`shrink-0 rounded-md border px-1.5 py-0.5 font-mono text-[9px] uppercase
                       tracking-wider transition-colors ${
                         text.trim()
-                          ? asking
-                            ? 'border-ember-500/40 bg-ember-500/10 text-ember-300'
-                            : 'border-ink-600 bg-ink-800 text-fog-300'
+                          ? teaching
+                            ? 'border-moss-400/40 bg-moss-400/10 text-moss-400'
+                            : asking
+                              ? 'border-ember-500/40 bg-ember-500/10 text-ember-300'
+                              : 'border-ink-600 bg-ink-800 text-fog-300'
                           : 'border-transparent text-transparent'
                       }`}
         >
-          {asking ? 'answer' : 'run it'}
+          {teaching ? 'remember' : asking ? 'answer' : 'run it'}
         </span>
         <button
           onClick={() => void submit()}
@@ -107,8 +127,26 @@ export function AskBox({ operator }: { operator: OperatorAvailability | null }) 
         </button>
       </div>
 
-      {!asking && text.trim() && operator && !operator.available && (
+      {!asking && !teaching && text.trim() && operator && !operator.available && (
         <p className="text-[11px] leading-relaxed text-ember-300">{operator.reason}</p>
+      )}
+
+      {taught && (
+        <p className={`text-[11px] leading-relaxed ${taught.fact ? 'text-moss-400' : 'text-ember-300'}`}>
+          {taught.note}
+          {taught.fact && <span className="text-fog-300"> “{taught.fact.statement}”</span>}
+          {taught.fact && (
+            <button
+              onClick={() => {
+                void api.forgetFact(taught.fact!.id);
+                setTaught(null);
+              }}
+              className="ml-2 text-fog-500 underline-offset-2 hover:text-fog-100 hover:underline"
+            >
+              Undo
+            </button>
+          )}
+        </p>
       )}
 
       {error && (
@@ -139,9 +177,13 @@ export function AskBox({ operator }: { operator: OperatorAvailability | null }) 
                       able to show you the note it remembered from. */}
                   {answer.cited.map((c) => (
                     <span
-                      key={c.id}
-                      className="rounded-md border border-ink-700 bg-ink-850 px-1.5 py-0.5 text-[10px] text-fog-300"
-                      title={`${c.type} note #${c.id}`}
+                      key={`${c.type}${c.id}`}
+                      className={`rounded-md border px-1.5 py-0.5 text-[10px] ${
+                        c.type === 'fact'
+                          ? 'border-moss-400/30 bg-moss-400/5 text-moss-400'
+                          : 'border-ink-700 bg-ink-850 text-fog-300'
+                      }`}
+                      title={c.type === 'fact' ? `something buddy learned about you (F${c.id})` : `${c.type} note #${c.id}`}
                     >
                       {c.title.slice(0, 60)}
                     </span>

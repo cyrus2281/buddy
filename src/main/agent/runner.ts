@@ -89,6 +89,10 @@ export interface RunnerDeps {
   killSwitches?: KillSwitches;
   /** Injected in the checks so a "10 minute" budget can be blown in 10 ms. */
   now?: () => number;
+  /** M5. What buddy has learned that bears on this goal, rendered for the
+   *  system prompt, or null. Asked once per attempt and then fixed, so the
+   *  system block stays byte-identical across turns and the cache holds. */
+  memory?: (goal: string) => string | null;
 }
 
 type ToolUse = { id: string; name: string; input: Record<string, unknown>; toolsetName: string | null };
@@ -113,6 +117,7 @@ export class AgentRunner extends EventEmitter {
   private startedAt = Date.now();
   private endedAt: number | null = null;
   private goal = '';
+  private memoryBlock: string | null | undefined;
   private profile: StartRunRequest['profile'] = 'attended';
   private lastHumanInputAt = 0;
   private humanInputCount = 0;
@@ -368,10 +373,25 @@ export class AgentRunner extends EventEmitter {
           budgets: this.budgets,
           scale: frame.scale,
           screen: { width: frame.width, height: frame.height },
+          memory: this.memoryFor(),
         }),
         cache_control: { type: 'ephemeral' },
       },
     ];
+  }
+
+  private memoryFor(): string | null {
+    if (this.memoryBlock === undefined) {
+      try {
+        this.memoryBlock = this.deps.memory?.(this.goal) ?? null;
+      } catch (e) {
+        log.warn('agent', 'memory for the run could not be assembled; running without it', {
+          error: (e as Error).message,
+        });
+        this.memoryBlock = null;
+      }
+    }
+    return this.memoryBlock;
   }
 
   private async resumeBlocks(

@@ -151,6 +151,7 @@ const ROLLUP_STUB = (over: Partial<RollupOutput> = {}): RollupOutput => ({
       artifacts: ['Notion: Q3 Migration'],
     },
   ],
+  learnings: [],
   injection_notice: null,
   ...over,
 });

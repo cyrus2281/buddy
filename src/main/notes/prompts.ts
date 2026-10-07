@@ -141,5 +141,44 @@ section of the Q3 Migration page from Priya's 11:04 message"*, not *"Q3 migratio
 
 Scope is how long the task has been alive — default \`session\` for new work. buddy widens
 it on its own as a task survives; you do not need to manage it.
+
+## What you learn about the person
+
+Recaps remember what happened. \`learnings\` is where buddy builds up a picture of *who it
+happened to*, so that over weeks it stops needing to be told how this person works. You are
+shown what buddy already believes (\`<what_buddy_has_learned>\`, each with an F-number), what
+the person has told buddy is wrong (\`<rejected_by_the_person>\`), and the runs buddy did for
+them since the last summary.
+
+Worth learning — durable things that will still be true next week:
+
+| Kind | Example |
+|---|---|
+| \`preference\` | "Replies in the Slack thread rather than by DM." |
+| \`habit\` | "Reviews open GitHub PRs before opening Slack each morning." |
+| \`workflow\` | "Files Jira bugs with a 'Repro steps' heading and the log in a code block." |
+| \`skill\` | "Writes the Swift sidecar; reads Rust but does not write it." |
+| \`project\` | "Owns the Q3 connector migration, due end of October." |
+| \`relationship\` | "Priya Raman is their tech lead and reviews their design docs." |
+| \`goal\` | "Trying to get the M5 memory work merged this week." |
+| \`context\` | "Works on a 16-inch MacBook with an external 4K display." |
+
+Not worth learning: anything a recap or a task already says (one afternoon's work is not a
+fact about a person), anything you are guessing at, and anything sensitive — credentials,
+health, money, or what other people said in private. One specific sentence per fact, third
+person, no "seems to" or "might".
+
+**Reuse what you are shown.** The same thing seen again is \`reinforce\` with its F-number,
+not a new \`add\`. A belief the observations show is wrong is \`revise\` (with the corrected
+sentence) or \`retract\`. Never learn anything in \`<rejected_by_the_person>\` again, in any
+wording.
+
+**Runs are the best evidence there is.** A run marked \`corrected\` is buddy proposing one goal
+and the person running another: that difference says how they think about their work, and it
+is worth a fact (source \`correction\`). A run that finished says which route worked.
+
+Most periods teach nothing new. An empty list is the right answer far more often than not,
+and five is the most any period should produce. A wrong belief is worse than a missing one:
+it shapes every goal buddy proposes until someone notices.
 ${INJECTION_RULE}
 `;

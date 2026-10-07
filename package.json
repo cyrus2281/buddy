@@ -4,14 +4,15 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "npm run build:sidecar && electron-vite dev",
-    "build": "npm run build:sidecar && electron-vite build",
+    "dev": "npm run build:sidecar && npm run fetch:model && electron-vite dev",
+    "build": "npm run build:sidecar && npm run fetch:model && electron-vite build",
     "build:sidecar": "bash sidecar/build.sh",
+    "fetch:model": "bash scripts/fetch-embedding-model.sh",
     "start": "electron-vite preview",
     "dist": "npm run build && electron-builder",
     "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.node.json",
     "eval:goal": "tsx evals/goal-inference/run.ts",
-    "postinstall": "electron-rebuild -f -w better-sqlite3",
+    "postinstall": "electron-rebuild -f -w better-sqlite3 && (bash scripts/fetch-embedding-model.sh || echo 'buddy: the embedding model did not download; run `npm run fetch:model` before building')",
     "rebuild": "electron-rebuild -f -w better-sqlite3",
     "check:m1": "electron-vite build && electron out/main/m1-checks.js",
     "check:m2": "electron-vite build && electron out/main/m2-checks.js",
@@ -20,12 +21,15 @@
     "eval:goal:shots": "tsx evals/goal-inference/run.ts --fixture .shot",
     "check:m4": "electron-vite build && electron out/main/m4-checks.js",
     "check:voice": "electron-vite build && electron out/main/voice-checks.js",
+    "check:memory": "npm run fetch:model && electron-vite build && electron out/main/memory-checks.js",
     "live:run": "electron-vite build && electron out/main/live-run.js",
-    "live:standby": "electron-vite build && electron out/main/live-standby.js"
+    "live:standby": "electron-vite build && electron out/main/live-standby.js",
+    "live:learn": "npm run fetch:model && electron-vite build && electron out/main/live-learn.js"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.125.0",
     "better-sqlite3": "^13.0.3",
+    "sqlite-vec": "^0.1.9",
     "zod": "^4.6.2"
   },
   "devDependencies": {
@@ -95,7 +99,17 @@
       {
         "from": "prompts/goal-inference.system.md",
         "to": "prompts/goal-inference.system.md"
+      },
+      {
+        "from": "resources/models",
+        "to": "models",
+        "filter": [
+          "**/*"
+        ]
       }
+    ],
+    "asarUnpack": [
+      "node_modules/sqlite-vec-darwin-arm64/**"
     ]
   }
 }

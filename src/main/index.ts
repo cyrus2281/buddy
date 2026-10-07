@@ -13,6 +13,7 @@ import { broadcast, createHome, createHud, hideHud, setHudSticky, showHud, toggl
 import { registerIpc, assertCoordinateScale, setHotkeyIssues } from './ipc.js';
 import { operator } from './agent/orchestrator.js';
 import { NotesEngine } from './notes/engine.js';
+import { memory } from './memory/service.js';
 import { Activation } from './agent/activation.js';
 import { StandbyManager } from './agent/standby.js';
 import { notify } from './notify.js';
@@ -180,6 +181,10 @@ async function main() {
 
   openDb();
   const s = settings.load();
+  // M5. Loads the embedding model and attaches the vector index; the index
+  // catches up on anything written since last time in the background.
+  memory.open();
+  operator.setMemoryProvider((goal) => memory.forRun(goal));
 
   // Menu-bar app: no Dock icon, no windows on launch. Observation is the
   // default mode, and it should not require a window to be open.
@@ -205,6 +210,7 @@ async function main() {
   scheduler.on('signal', (sig) => {
     lastFront = { bundleId: sig.bundleId, windowTitle: sig.windowTitle };
   });
+  memory.attach(scheduler);
   voice = new VoiceListener({ settings: () => settings.get(), transport: sidecar });
   voice.on('status', () => updateTray());
   voice.on('wake', () => activate('voice'));
@@ -301,6 +307,10 @@ async function main() {
   // The tray menu is rebuilt on every state change, which is what keeps the
   // Stop item present for exactly as long as there is something to stop.
   operator.on('update', (v) => {
+    // M5: a run that ended — first attempt or a standby resume — is an
+    // episode to learn from. Idempotent, so the repeated terminal updates a
+    // run emits on its way out record it once.
+    memory.onRunUpdate(v);
     updateTray();
     // §7.1: `needs_human` is a terminal state with a notification and a
     // preserved log. Latched on the transition so a view emitted twice does not
@@ -490,6 +500,7 @@ app.on('will-quit', async (e) => {
   // blocking quit on a model call would make buddy feel wedged on exit, and
   // the observations survive to be rolled up at next launch either way.
   engine?.stop();
+  memory.stop();
   scheduler?.stop();
   await sidecar.stop();
   closeDb();

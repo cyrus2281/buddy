@@ -16,6 +16,8 @@ import path from 'node:path';
 import { notes, observations, relations, tasks } from './store/notes.js';
 import { timeline } from './store/timeline.js';
 import { askAboutMyDay } from './notes/ask.js';
+import { memory } from './memory/service.js';
+import { semanticNotes } from './memory/recall.js';
 import { operatorAvailability, providerStatuses } from './providers.js';
 import type { NotesEngine } from './notes/engine.js';
 import type { Activation } from './agent/activation.js';
@@ -26,6 +28,8 @@ import {
   type Allowlist,
   type AppState,
   type DisplayInfo,
+  type FactKind,
+  type NoteSearchHit,
   type NoteType,
   type RunBudgets,
   type StartRunRequest,
@@ -178,6 +182,10 @@ export function registerIpc(ctx: Ctx) {
   // ── M2 — the Operator ───────────────────────────────────────────────────
 
   ipcMain.handle(CH.startRun, async (_e, req: StartRunRequest) => {
+    // M5: what the HUD was offering, captured before the run replaces it, so
+    // the run's end can say whether the person took buddy's goal or overrode
+    // it. The comparison is the most useful thing buddy learns all day.
+    memory.expectRun(req.goal, ctx.activation.current());
     ctx.setState('ACTING');
     try {
       const view = await operator.start({
@@ -231,15 +239,29 @@ export function registerIpc(ctx: Ctx) {
   ipcMain.handle(CH.getInference, () => ctx.activation.current());
 
   ipcMain.handle(CH.getNotes, (_e, type: NoteType, limit = 200) => notes.list(type, limit));
-  ipcMain.handle(CH.searchNotes, (_e, query: string, type?: NoteType) => notes.search(query, type));
+  /** Keyword hits first, with their highlighted snippets; then (M5) notes
+   *  that match by meaning and share no word with the query, marked as such.
+   *  A search box that says "nothing matching" for "lunch" when a note says
+   *  "midday break" is the failure this widening is for. */
+  ipcMain.handle(CH.searchNotes, (_e, query: string, type?: NoteType): NoteSearchHit[] => {
+    const words = notes.search(query, type);
+    const seen = new Set(words.map((h) => h.note.id));
+    const meaning = semanticNotes(query, type, seen).map((note) => ({
+      note,
+      snippet: `≈ ${note.body.slice(0, 160)}`,
+    }));
+    return [...words, ...meaning];
+  });
   ipcMain.handle(CH.getNoteDetail, (_e, id: number) => notes.detail(id));
   ipcMain.handle(CH.updateNote, (_e, id: number, patch: { title?: string; body?: string }) => {
     const n = notes.update(id, patch);
+    memory.touched();
     broadcast(CH.onNotesChanged, null);
     return n;
   });
   ipcMain.handle(CH.deleteNote, (_e, id: number) => {
     notes.delete(id);
+    memory.touched();
     broadcast(CH.onNotesChanged, null);
     broadcast(CH.onNotesStats, ctx.engine.stats());
   });
@@ -351,6 +373,22 @@ export function registerIpc(ctx: Ctx) {
     operator: operatorAvailability(),
   }));
 
+  // ── M5 — buddy learns you ───────────────────────────────────────────────
+
+  ipcMain.handle(CH.getMemory, () => memory.overview());
+  ipcMain.handle(CH.searchMemory, (_e, query: string) => memory.search(query));
+  ipcMain.handle(CH.teach, (_e, text: string) => memory.teach(text));
+  ipcMain.handle(CH.confirmFact, (_e, id: number) => memory.confirm(id));
+  ipcMain.handle(CH.rejectFact, (_e, id: number) => memory.reject(id));
+  ipcMain.handle(CH.restoreFact, (_e, id: number) => memory.restore(id));
+  ipcMain.handle(CH.editFact, (_e, id: number, patch: { statement?: string; kind?: FactKind }) =>
+    memory.edit(id, patch),
+  );
+  ipcMain.handle(CH.forgetFact, (_e, id: number) => memory.forget(id));
+  ipcMain.handle(CH.forgetLearned, () => memory.forgetEverything());
+  ipcMain.handle(CH.rebuildMemoryIndex, () => memory.rebuildIndex());
+  memory.on('changed', () => broadcast(CH.onMemoryChanged, null));
+
   // ── Voice ───────────────────────────────────────────────────────────────
 
   ipcMain.handle(CH.getVoiceStatus, () => ctx.voice.current());
@@ -382,10 +420,15 @@ export function registerIpc(ctx: Ctx) {
   ctx.activation.on('change', (st) => broadcast(CH.onInference, st));
   ctx.engine.on('stats', (st) => broadcast(CH.onNotesStats, st));
   ctx.engine.on('spend', (sp) => broadcast(CH.onSpend, sp));
-  ctx.engine.on('observation', () => broadcast(CH.onNotesStats, ctx.engine.stats()));
-  ctx.engine.on('rollup', () => {
+  ctx.engine.on('observation', () => {
+    memory.touched();
+    broadcast(CH.onNotesStats, ctx.engine.stats());
+  });
+  ctx.engine.on('rollup', (r: { learned: unknown }) => {
+    memory.touched();
     broadcast(CH.onNotesChanged, null);
     broadcast(CH.onNotesStats, ctx.engine.stats());
+    if (r.learned) broadcast(CH.onMemoryChanged, null);
   });
 
   // A run interrupted by a crash or a quit must not still read as running.

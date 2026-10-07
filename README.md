@@ -19,6 +19,18 @@ happens, it picks up the same run where it left off — with everything it had
 already worked out still in hand. Quit buddy and relaunch it; it is still
 waiting, because the wait is a row in a database and not a timer in a process.
 
+**And it learns you.** Notes remember what happened; M5 remembers who it
+happened to. Every hourly summary also proposes durable facts about the person —
+how they file bugs, who their tech lead is, that they review PRs before opening
+Slack — and buddy merges them into beliefs that strengthen when seen again and
+fade when not. Every run is remembered, and every time you overrode the goal
+buddy proposed is remembered hardest, because it is the one moment buddy's
+picture of you is tested against what you actually wanted. The shape of your
+week is learned for free from which app is in front, hour by hour. All of it is
+searchable by meaning, on this Mac, through a 30 MB embedding model and a
+sqlite-vec index inside buddy's own database — and all of it is on the **You**
+tab, where every belief can be confirmed, rejected, edited or forgotten.
+
 The typed goal is still there. It is now the override, not the entry point.
 
 ## Requirements
@@ -30,6 +42,11 @@ Developer account, nothing to pay for.
 xcode-select --install   # if `swiftc` is missing
 npm install
 ```
+
+`npm install` also fetches the embedding model (~30 MB, once) into
+`resources/models/`, pinned to one upstream revision and checked by SHA-256.
+If it cannot reach Hugging Face it says so and carries on; `npm run
+fetch:model` retries, and `dev` and `build` run it anyway.
 
 ## First run
 
@@ -128,8 +145,11 @@ crash loop.
 | `npm run check:m3` | The M3 exit-criteria checks (66 of them) |
 | `npm run check:m4` | The M4 exit-criteria checks (41 of them) |
 | `npm run check:voice` | The "hey buddy" checks (21 of them) — matcher, routing, the listener, and the real `buddyd` |
+| `npm run check:memory` | The M5 checks (39 of them) — the real embedder, the real sqlite-vec index, retrieval quality on a benchmark, learning through a scripted rollup |
 | `npm run live:run` | One real two-app run against a live Opus 5 (needs `ANTHROPIC_API_KEY`) |
 | `npm run live:standby` | Story B end to end against live Opus 5 + Haiku 4.5 |
+| `npm run live:learn` | Story C: two days of learning, a correction, Ask and goal inference against live Sonnet 5 + Opus 5, in a throwaway database (~$0.20) |
+| `npm run fetch:model` | Fetch and verify the embedding model (idempotent) |
 | `npm run typecheck` | Both tsconfigs |
 | `npm run eval:goal` | The goal-inference eval (needs `ANTHROPIC_API_KEY`) |
 | `npm run eval:record` | Re-record the eval's real-screenshot fixtures |
@@ -183,6 +203,208 @@ Both have the same Designated Requirement, so the grant is stable either way —
 `sign-app.sh` matters when you build the sidecar separately, or re-sign after
 editing it.
 
+## What M5 built — buddy learns you
+
+```
+src/main/memory/
+  embed.ts        potion-base-8M: a WordPiece tokenizer and a mean, in TypeScript
+  vectors.ts      the memory index: text + vector per item, sqlite-vec, BM25
+  index.ts        keeps the index in step with the rows — computed, not hooked
+  recall.ts       hybrid search: meaning and words, fused, aged, diversified
+  facts.ts        beliefs: confidence, evidence, and decay computed at read time
+  learn.ts        the merge: what a rollup proposes, and what actually changes
+  episodes.ts     every run, and every goal the person overrode
+  rhythm.ts       the week, from the free T0 signal
+  context.ts      what goal inference, the Operator and Ask are each given
+  service.ts      one object the app talks to
+src/shared/teach.ts            "remember that …", parsed the same in both processes
+src/renderer/views/You.tsx     what buddy has learned, and the buttons to correct it
+scripts/fetch-embedding-model.sh
+evals/memory-retrieval/        30 memories, 26 questions, the retrieval yardstick
+```
+
+### The parts worth knowing about
+
+**The embedding model runs no neural network.** potion-base-8M is a Model2Vec
+*static* model: a 29,528 × 256 table with one vector per WordPiece token. A
+sentence is embedded by tokenizing it and averaging its rows — about 20 µs, on
+the main process, with no ONNX runtime, no worker and no network. It was chosen
+by measurement, on a retrieval set shaped like buddy's memory
+(`evals/memory-retrieval`): top-3 hit rate **96%**, against 65% for BM25 alone
+and 46% for Apple's on-device `NLEmbedding` — which costs nothing to ship and
+was the first thing tried. A transformer through onnxruntime-node would score
+somewhat higher and is a 300 MB native dependency. The tokenizer is a port of
+the Hugging Face one the model was trained with, and it is pinned against token
+ids from the reference library: a token split one way instead of another is a
+different row of the table, and the vector would drift with no error anywhere.
+
+**The vector database is sqlite-vec, inside buddy's own SQLite file.** 160 KB
+of C, loaded into the same better-sqlite3 handle as everything else, so a note
+and its vector are written in one transaction. But the vec0 table is an
+*accelerator*, not the truth: every vector is also a row in `memory_vectors`,
+and if the extension will not load, nearest-neighbour search becomes a scan of
+those rows and returns the same results — the checks assert they agree to 1e-4.
+The next launch where it loads rebuilds the accelerator from the rows. Same
+argument as the wakeups table: the row is the thing that survives.
+
+**What is owed is computed from the rows, never hooked.** There is no "embed
+this" call in the note store, the rollup, or the fact store. The index asks
+SQLite which items have no row, a row older than their `updated_at`, or a row
+for something deleted, and fixes exactly those — after every observation, every
+rollup and every edit, and in bounded slices before every search. A crash, a
+restart, or a write from a path nobody remembered loses nothing. A year of
+observations (20,000 rows) indexes in 1.2 s.
+
+**Both halves of recall search the same rows.** Keywords and meaning are two
+indexes over one table: the exact text an item is embedded from is also what
+FTS5 indexes. The first version searched the notes', observations' and facts'
+own FTS tables and pooled the BM25 scores, and that was quietly wrong — each
+table has its own statistics, so a weak match in a small table outscored a
+strong one in a big table. One corpus, one IDF.
+
+**Fusion is a weighted sum of scores, and that was measured, not assumed.**
+The first cut used reciprocal-rank fusion, the textbook default — and the
+retrieval check caught it being **worse than meaning alone** (top-3 73% against
+96%). RRF's damping makes rank 1 and rank 5 nearly equal, so being found by
+both searches at all outweighed being found *well* by one, and in a memory
+nearly everything shares a word with nearly everything. It is now 0.8 × cosine
++ 0.2 × BM25 normalised to the query's best keyword match, then weighted by age
+and belief, then re-ranked for diversity (six observations of the same ten
+minutes are one memory, not six results). On the retrieval set: top-1 **85%**,
+top-3 **96%**, MRR **0.91** — better than either half alone, and
+`npm run check:memory` fails if a change makes that worse.
+
+**Learning rides the rollup; it is not a second model call.** The hourly
+summary is shown what buddy already believes that bears on this hour (found by
+meaning), what the person rejected, and the runs since last time — and returns,
+beside the recap, at most five `learnings`: add, reinforce, revise or retract,
+each naming an F-number it was shown. Then the same rule as the relation merge
+applies: **prompt-level reuse keeps the memory readable; the mechanical merge is
+what makes it correct.** Whatever comes back goes through `learnFact`, which
+finds the existing belief before writing a new one.
+
+**"The same belief" needs the same meaning *and* the same words.** A static
+embedding is a mean of word vectors, so "prefers dark mode" and "prefers light
+mode" are 0.92 apart in cosine — merge on meaning alone and buddy would count
+evidence for the opposite of what it saw, or block a correct belief because it
+resembles a rejected one. So a merge needs cosine ≥ 0.85 *and* three-quarters
+of the content words in common. "Prefers replying in Slack threads rather than
+DMs" reinforces "prefers to reply in the Slack thread rather than by DM";
+"light" never reinforces "dark".
+
+**Beliefs fade unless they are seen again, and that costs no clock.** Each
+fact stores its confidence as of the last sighting; what anything acts on is
+that decayed by age, computed when it is read. A project halves in 21 days, a
+habit in 45, a preference in 180, a skill in a year, and evidence slows it — a
+habit seen sixteen times outlasts one seen once. Below 0.25 a belief goes
+dormant: still listed, labelled *fading*, no longer brought up. Nothing runs
+overnight to make that true, so a Mac shut for a fortnight wakes with
+fortnight-old beliefs at exactly the strength they should have. A first
+sighting is capped at 0.6 — one hour of watching is a hypothesis — and each
+confirmation closes 30% of the gap to certainty.
+
+**The person's word outranks the model's.** A belief the person confirmed, or
+said, or edited, is pinned: it does not fade, and a rollup can reinforce it but
+never revise or retract it. A belief they reject is *kept*, greyed, as a list
+of things never to learn again — "wrong" and "forget" are different buttons
+because they mean different things. An F-number is honoured only if that fact
+was in what the rollup was shown: a made-up id that happened to exist would let
+a hallucination edit an unrelated belief. Credentials never become beliefs —
+the guardrail's API-key, card-number and seed-phrase detectors run on every
+sentence before it is stored.
+
+**Corrections are the most valuable thing buddy sees all day.** When the HUD
+offered "Send Priya a DM" and the person typed "Reply in the thread" instead,
+that is written down as a correction episode — not discarded with the HUD. The
+next goal inference that looks similar is shown it (`<past_corrections>`), with
+the instruction that where the screen supports both, what they chose beats what
+buddy proposed. The next rollup is shown it too, and usually turns it into a
+preference. Picking buddy's *second* guess is recorded as well; typing over the
+200 ms provisional goal is not, because that was never buddy's judgement.
+
+**Every stage that acts gets a different slice.** Goal inference gets the
+profile (strongest beliefs, early in the bundle with the other stable blocks),
+matching corrections, the week's line for this hour, and older recaps that match
+the screen — each block present only when it has something in it, so the eval
+fixtures render byte-identically to before. The Operator gets "how this person
+works": the beliefs and past runs that match *this goal*, framed as background
+that never changes the goal, widens the allowlist or authorises anything — and
+no heading at all when there is nothing relevant. Ask gets the beliefs that
+bear on the question plus the strongest ones, so "what do you know about me?"
+has an answer, with F-number citations it can be checked against.
+
+**The week is learned for free.** The T0 signal already says, every two
+seconds, which app is in front and how long since the last keystroke. Summed per
+app per local hour that is an exact record of when and in what someone works —
+no model, no screenshot, and it outlives the daily frame purge because it is
+integers rather than pictures. Idle time, gaps from sleep, and apps on the
+exclusion list are not counted: knowing how long someone spent in their password
+manager is looking at it.
+
+**"Remember that …" is a third route in the Ask box.** Checked before the
+question test, shown as a green *remember* chip before Enter, and stored in the
+person's own words, pinned — rewriting "I prefer threads" into "Prefers threads"
+with a model would be putting words in their mouth in the one place buddy
+promised to take them as given. Telling buddy something it was once told was
+wrong stores the new sentence and keeps the old rejection as history.
+
+**Learning can be turned off, and that is honoured below the prompt.** Off,
+the rollup is told so *and* anything it returns anyway is ignored; goal
+inference, the Operator and Ask get none of it; the week stops recording.
+Nothing is deleted. "Forget everything learned" deletes beliefs (rejected ones
+included), episodes and the week — and leaves notes and the run log, which are
+what happened and have their own delete buttons. Deleting a run deletes what
+was learned from it.
+
+## What M5 verifies
+
+`npm run check:memory` runs 39 checks. Unlike M3 and M4, the expensive-looking
+half is **not** replaced: the embedder is the bundled model, the vector index is
+the bundled sqlite-vec, and retrieval quality is measured on a real retrieval
+set. Both are local, deterministic and free, so there is nothing to stub. The
+one thing replaced is, again, the language model.
+
+- **Tokenizer parity** with the reference library — accents, CJK, emoji,
+  punctuation-as-words, an over-long word — and the vector to 1e-5.
+- **vec0 and the scan agree** on nearest neighbours, the index **survives the
+  extension not loading** with identical results, and **rebuilds the
+  accelerator** from rows written while it was away.
+- **The index is computed from rows**: every kind of memory once, a second sync
+  doing nothing, an edit re-embedded, a delete leaving no vector, and **a
+  different model emptying and rebuilding** rather than mixing two spaces.
+- **A v1 database migrates** and its existing observations become searchable.
+- **The merge**: a re-worded belief reinforced, an opposite kept separate at
+  cosine 0.92, a rejection never re-learned, telling overriding a rejection,
+  credentials refused from either direction.
+- **The arithmetic**: two half-lives to dormant, skills fading slower, evidence
+  slowing decay, pinned beliefs not fading, diminishing reinforcement.
+- **Learning through the real NotesEngine** and a scripted Sonnet: the prompt
+  carries the relevant belief, the rejection and the correction; the reply
+  reinforces one, adds one and has one blocked; the run is marked learned from.
+  With learning off, nothing is learned even when the model returns some.
+- **A model cannot rewrite a confirmed belief** or touch one it was not shown.
+- **Runs**: accepted, alternative, corrected, typed and provisional goals told
+  apart; waiting → resumed → done recorded as one episode with one correction;
+  deleting the run forgetting both.
+- **Retrieval quality**: keywords alone 62% top-1, meaning alone 81%, hybrid
+  85% — with top-3 96% and MRR 0.91 — on 26 questions; a question with no word
+  in common with its answer; recency and diversity; Ask citing a fact; the Notes
+  search widening by meaning.
+- **The stages**: the inference bundle carries the profile, the correction and
+  the week, and none of it with learning off; **all five eval fixtures render
+  byte-identically** with empty memory; the Operator's section appears for a
+  Jira goal, leaves out an irrelevant belief, and is absent for a cake order.
+- **The week** from synthetic signals: 40 minutes at 10:00, with idle time, the
+  password manager and a sleep gap not counted.
+- **Scale**: 20,000 observations embedded in 1.2 s; median recall 11 ms.
+- **Both providers' schema converters** accept the new rollup and Ask shapes.
+
+What it does **not** cover: whether a live Sonnet learns *good* beliefs from a
+real afternoon. `npm run live:learn` is the harness for that — two days of a
+person's habits rolled up separately, a correction, Ask and goal inference, all
+live, in a throwaway database. It has not been run against the API yet: the key
+this was built with had no credit when it was tried.
+
 ## What M4 built — the waiting, and the rest of the app
 
 ```
@@ -192,7 +414,7 @@ src/main/agent/
 src/main/
   notify.ts       three notifications, and only three
   providers.ts    §9.1's matrix as data, plus the OpenAI-compatible client
-  notes/ask.ts    FTS5 + the notes into context; vector search is a later backfill
+  notes/ask.ts    FTS5 + the notes into context (M5 put vector search behind the same seam)
   store/timeline.ts  days, apps, and "delete this day now"
 src/renderer/
   views/Timeline.tsx        the day scrubber and the filmstrip
@@ -700,3 +922,10 @@ anything reaches disk.
 Screenshots never leave this machine **except** as model input when buddy
 observes or acts. That is the product. Pause is honoured everywhere — it stops
 capture entirely, not just the UI.
+
+What buddy learns about you (M5) is stored here and indexed here: the embedding
+model and the vector index run on this Mac, and nothing is sent anywhere to be
+embedded. Learned beliefs **do** leave as model input, the same way notes do —
+the relevant ones go with each hourly summary, each goal inference, each run and
+each question. The You tab shows every one of them, and Settings › Memory turns
+learning off.

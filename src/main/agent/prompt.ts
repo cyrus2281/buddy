@@ -31,6 +31,11 @@ export interface PromptContext {
    *  transcript rather than only in a log. */
   scale: number;
   screen: { width: number; height: number };
+  /** M5. "How this person works", from `memory/context.ts`, or nothing. Built
+   *  in main from what buddy learned — never from the request, which crosses
+   *  IPC from a renderer and so is the wrong place for anything a prompt
+   *  trusts. */
+  memory?: string | null;
 }
 
 export function buildSystemPrompt(c: PromptContext): string {
@@ -100,6 +105,7 @@ export function buildSystemPrompt(c: PromptContext): string {
     '- **When you are stuck**, say so with `finish` rather than trying variations. Three failed ' +
       'attempts at the same thing means the approach is wrong, not that it needs a fourth.',
     '',
+    ...(c.memory?.trim() ? [c.memory.trim(), ''] : []),
     '## Ending the run',
     '',
     'Always end by calling `finish`. Never end your turn with prose instead — buddy reads the ' +

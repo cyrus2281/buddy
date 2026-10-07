@@ -3,7 +3,7 @@
 /// queries rather than a migration, and the shape is reviewable while it is
 /// still cheap to change.
 
-export const SCHEMA_VERSION = 1;
+export const SCHEMA_VERSION = 2;
 
 export const SCHEMA = `
 CREATE TABLE IF NOT EXISTS frames (
@@ -47,7 +47,10 @@ CREATE TABLE IF NOT EXISTS notes (
   updated_at      INTEGER NOT NULL,
   salience        REAL    NOT NULL DEFAULT 0,
   source_obs_json TEXT    NOT NULL DEFAULT '[]',
-  -- NULL in v1. Present so vector search is a backfill job, not a migration.
+  -- Always NULL. Reserved in v1 for vector search; when it arrived (M5) it
+  -- needed vectors for observations, facts and runs too, so they all live in
+  -- \`memory_vectors\` instead. Left in place because dropping a column rewrites
+  -- the table for no gain.
   embedding       BLOB
 );
 CREATE INDEX IF NOT EXISTS idx_notes_type ON notes(type, updated_at DESC);
@@ -134,4 +137,112 @@ CREATE TABLE IF NOT EXISTS settings (
   key   TEXT PRIMARY KEY,
   value TEXT NOT NULL
 );
+
+-- ── M5 — buddy learns you ────────────────────────────────────────────────────
+
+-- What buddy has learned about the person: one atomic statement per row.
+-- \`confidence\` is the belief as of \`last_seen_at\`; what prompts and the UI use
+-- is that belief decayed by age (memory/facts.ts), computed at read time so
+-- nothing has to run on a clock for an old habit to fade.
+CREATE TABLE IF NOT EXISTS facts (
+  id                INTEGER PRIMARY KEY AUTOINCREMENT,
+  kind              TEXT    NOT NULL CHECK (kind IN ('preference','habit','workflow','skill','project','relationship','goal','context')),
+  statement         TEXT    NOT NULL,
+  confidence        REAL    NOT NULL DEFAULT 0.5,
+  evidence          INTEGER NOT NULL DEFAULT 1,
+  source            TEXT    NOT NULL CHECK (source IN ('observed','told','run','corrected')),
+  -- pinned = the user confirmed it or said it; rejected = the user said it is
+  -- wrong, and it is kept so buddy does not learn it again next hour.
+  status            TEXT    NOT NULL DEFAULT 'active' CHECK (status IN ('active','pinned','rejected','superseded')),
+  superseded_by     INTEGER REFERENCES facts(id) ON DELETE SET NULL,
+  created_at        INTEGER NOT NULL,
+  updated_at        INTEGER NOT NULL,
+  last_seen_at      INTEGER NOT NULL,
+  source_obs_json   TEXT    NOT NULL DEFAULT '[]'
+);
+CREATE INDEX IF NOT EXISTS idx_facts_status ON facts(status, last_seen_at DESC);
+
+-- Every run, as something to learn from. \`correction\` rows are the strongest
+-- signal buddy gets: it proposed one goal and the person ran another.
+-- Deleting a run deletes what was learned from it, because deleting a run is
+-- how a person says "forget that happened".
+CREATE TABLE IF NOT EXISTS episodes (
+  id             INTEGER PRIMARY KEY AUTOINCREMENT,
+  run_id         INTEGER NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
+  kind           TEXT    NOT NULL CHECK (kind IN ('run','correction')),
+  ts             INTEGER NOT NULL,
+  updated_at     INTEGER NOT NULL,
+  goal           TEXT    NOT NULL,
+  inferred_goal  TEXT,
+  -- accepted | alternative | corrected | typed | provisional
+  goal_source    TEXT    NOT NULL DEFAULT 'typed',
+  status         TEXT    NOT NULL DEFAULT '',
+  summary        TEXT    NOT NULL DEFAULT '',
+  apps_json      TEXT    NOT NULL DEFAULT '[]',
+  steps          INTEGER NOT NULL DEFAULT 0,
+  cost_usd       REAL    NOT NULL DEFAULT 0,
+  learned_at     INTEGER,
+  UNIQUE (run_id, kind)
+);
+CREATE INDEX IF NOT EXISTS idx_episodes_ts ON episodes(ts DESC);
+
+-- How the week is shaped: active seconds per app per local hour, from the
+-- free T0 signal. Survives frame retention, costs nothing, needs no model.
+CREATE TABLE IF NOT EXISTS app_usage (
+  day       TEXT    NOT NULL,
+  hour      INTEGER NOT NULL,
+  weekday   INTEGER NOT NULL,
+  bundle_id TEXT    NOT NULL,
+  app_name  TEXT    NOT NULL,
+  seconds   INTEGER NOT NULL DEFAULT 0,
+  PRIMARY KEY (day, hour, bundle_id)
+);
+
+-- The memory index: one row per memory item, whatever it is, holding the
+-- exact text it is searched by and, when an embedding model is installed, its
+-- unit vector. Both halves of recall search *this* table — keywords through
+-- \`memory_fts\`, meaning through the vector — so the two always agree on what
+-- an item says, and keyword scores come from one corpus rather than being
+-- pooled across tables with different statistics.
+--
+-- This table is the truth; sqlite-vec's \`memory_vec\` is an accelerator
+-- rebuilt from it, so buddy still searches by meaning on a machine where the
+-- extension will not load. \`src_version\` is the source row's \`updated_at\`
+-- when it was indexed — an edit changes it, which is how the index knows it is
+-- stale. \`vector\` is empty for text with nothing to embed, and for every row
+-- when no model is installed (\`model\` = 'none'): keywords still work then.
+CREATE TABLE IF NOT EXISTS memory_vectors (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  source      TEXT    NOT NULL CHECK (source IN ('note','observation','fact','episode')),
+  source_id   INTEGER NOT NULL,
+  src_version INTEGER NOT NULL,
+  model       TEXT    NOT NULL,
+  text        TEXT    NOT NULL DEFAULT '',
+  vector      BLOB    NOT NULL,
+  UNIQUE (source, source_id)
+);
+
+CREATE VIRTUAL TABLE IF NOT EXISTS memory_fts USING fts5(
+  text, content='memory_vectors', content_rowid='id', tokenize='porter unicode61'
+);
+CREATE TRIGGER IF NOT EXISTS memory_fts_ai AFTER INSERT ON memory_vectors BEGIN
+  INSERT INTO memory_fts(rowid, text) VALUES (new.id, new.text);
+END;
+CREATE TRIGGER IF NOT EXISTS memory_fts_ad AFTER DELETE ON memory_vectors BEGIN
+  INSERT INTO memory_fts(memory_fts, rowid, text) VALUES ('delete', old.id, old.text);
+END;
+CREATE TRIGGER IF NOT EXISTS memory_fts_au AFTER UPDATE OF text ON memory_vectors BEGIN
+  INSERT INTO memory_fts(memory_fts, rowid, text) VALUES ('delete', old.id, old.text);
+  INSERT INTO memory_fts(rowid, text) VALUES (new.id, new.text);
+END;
 `;
+
+/** Steps from one `user_version` to the next, for databases created before it.
+ *  `SCHEMA` is all `IF NOT EXISTS`, so new tables appear on their own; what a
+ *  migration is for is the work that has to happen to *existing rows*. */
+export const MIGRATIONS: Record<number, string> = {
+  // v1 → v2 is additive: every M5 table is new, and the memory index fills
+  // itself from the existing notes and observations on the first launch
+  // (memory/index.ts), because what it needs is an embedding, not SQL.
+  2: '',
+};

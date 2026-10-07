@@ -5,6 +5,11 @@ import type {
   CaptureStats,
   DayAnswer,
   DisplayInfo,
+  FactKind,
+  FactView,
+  MemoryHit,
+  MemoryOverview,
+  TeachResult,
   FrameRow,
   GateAnswer,
   InferenceState,
@@ -103,6 +108,18 @@ export const CH = {
   askAboutMyDay: 'buddy:askAboutMyDay',
   getProviders: 'buddy:getProviders',
 
+  // M5 — buddy learns you
+  getMemory: 'buddy:getMemory',
+  searchMemory: 'buddy:searchMemory',
+  teach: 'buddy:teach',
+  confirmFact: 'buddy:confirmFact',
+  rejectFact: 'buddy:rejectFact',
+  restoreFact: 'buddy:restoreFact',
+  editFact: 'buddy:editFact',
+  forgetFact: 'buddy:forgetFact',
+  forgetLearned: 'buddy:forgetLearned',
+  rebuildMemoryIndex: 'buddy:rebuildMemoryIndex',
+
   // Voice — "hey buddy"
   getVoiceStatus: 'buddy:getVoiceStatus',
   requestVoicePermission: 'buddy:requestVoicePermission',
@@ -129,6 +146,7 @@ export const CH = {
   onWakeups: 'buddy:wakeups',
   onVoice: 'buddy:voice',
   onVoiceCommand: 'buddy:voiceCommand',
+  onMemoryChanged: 'buddy:memoryChanged',
   hudShown: 'hud:shown',
   hudHidden: 'hud:hidden',
 } as const;
@@ -267,6 +285,24 @@ export interface BuddyApi {
   /** PRD §8.2 / §9: FTS5 over the notes, plus the notes, into context. */
   askAboutMyDay(question: string): Promise<DayAnswer>;
   getProviders(): Promise<{ providers: ProviderStatus[]; operator: OperatorAvailability }>;
+
+  /** M5. Everything the "You" screen shows, in one round trip. */
+  getMemory(): Promise<MemoryOverview>;
+  /** Keywords and meaning, across every kind of memory. */
+  searchMemory(query: string): Promise<MemoryHit[]>;
+  /** "Remember that …" from the Ask box. */
+  teach(text: string): Promise<TeachResult>;
+  confirmFact(id: number): Promise<FactView | null>;
+  /** "That's wrong." Kept, so buddy never learns it again. */
+  rejectFact(id: number): Promise<FactView | null>;
+  restoreFact(id: number): Promise<FactView | null>;
+  editFact(id: number, patch: { statement?: string; kind?: FactKind }): Promise<FactView | null>;
+  /** Gone, including from the list of things not to re-learn. */
+  forgetFact(id: number): Promise<void>;
+  /** Every fact, run episode and hour of app time. Notes are untouched. */
+  forgetLearned(): Promise<void>;
+  rebuildMemoryIndex(): Promise<void>;
+
   getVoiceStatus(): Promise<VoiceStatus>;
   /** Raises the system prompt where macOS still allows one, then re-checks. */
   requestVoicePermission(kind: 'microphone' | 'speech'): Promise<VoiceStatus>;
@@ -300,6 +336,9 @@ export interface BuddyApi {
   /** A go-ahead or a dismissal heard while the HUD was up. The HUD decides
    *  what it means (see `shared/voice.ts`). */
   onVoiceCommand(fn: (c: VoiceCommand) => void): () => void;
+  /** Something the "You" screen shows changed: a fact learned, a run
+   *  recorded, the index caught up. */
+  onMemoryChanged(fn: () => void): () => void;
   onHudShown(fn: () => void): () => void;
   onHudHidden(fn: () => void): () => void;
 }

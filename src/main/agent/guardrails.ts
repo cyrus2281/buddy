@@ -219,6 +219,17 @@ function looksLikeSeedPhrase(text: string): boolean {
   return words.every((w) => /^[a-z]{3,8}$/.test(w));
 }
 
+/** M5. The same shapes, asked of a sentence buddy is about to *remember*
+ *  rather than a keystroke it is about to type. A learned fact is shown back
+ *  to models for months; a key that slipped into one would be sent with every
+ *  activation. */
+export function containsCredential(text: string): string | null {
+  for (const k of KEY_SHAPES) if (k.re.test(text)) return k.what;
+  if (looksLikeCardNumber(text)) return 'a card number';
+  if (looksLikeSeedPhrase(text)) return 'a seed phrase';
+  return null;
+}
+
 // ─── Action kinds ────────────────────────────────────────────────────────────
 
 const READ_ONLY_ACTIONS = new Set([

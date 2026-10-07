@@ -262,7 +262,7 @@ export class NotesEngine extends EventEmitter {
       // The recap records exactly the observations it covered, so one written
       // while the call was in flight belongs to the next period rather than
       // being silently swallowed by this one.
-      const result = await rollup(client, obs, reason, period);
+      const result = await rollup(client, obs, reason, period, { learn: this.settings.learningEnabled });
       if (!result) return false;
       this.lastRollupAt = this.now();
       this.spend.record('t3', result.costUsd, this.lastRollupAt);

@@ -187,6 +187,14 @@ export interface Settings {
   /** What counts as "go ahead" once the HUD is showing a suggestion. Stored as
    *  typed and normalised when matched, so "Let's go!" still reads as written. */
   voiceConfirmPhrases: string[];
+
+  // M5 — buddy learns you.
+  /** Learn durable facts about the person from what buddy watches and from
+   *  the runs it does, and use them when it reads the screen, answers a
+   *  question, or acts. Off, buddy still remembers what happened (notes) but
+   *  stops building a picture of who it happened to, and stops consulting the
+   *  one it has. Nothing learned is deleted by turning it off. */
+  learningEnabled: boolean;
 }
 
 /** The six things buddy asks Claude to do, each on its own model.
@@ -284,6 +292,7 @@ export const DEFAULT_SETTINGS: Settings = {
   anthropicBaseUrl: '',
   anthropicModels: {},
   voiceEnabled: false,
+  learningEnabled: true,
   voiceConfirmPhrases: [
     'take over',
     'take it over',
@@ -743,7 +752,7 @@ export interface DayAnswer {
   question: string;
   answer: string;
   /** The notes the answer drew on, so it can be checked rather than believed. */
-  cited: { id: number; type: NoteType; title: string }[];
+  cited: { id: number; type: NoteType | 'fact'; title: string }[];
   costUsd: number;
   ms: number;
   provider: ProviderId;
@@ -792,4 +801,153 @@ export type VoiceIntent = { kind: 'confirm' } | { kind: 'cancel'; addressed: boo
 export interface VoiceCommand {
   kind: 'confirm' | 'dismiss';
   t: number;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// M5 — buddy learns you
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** What a learned fact is about. The kind decides how fast it fades: a
+ *  project is over in weeks, a skill is not. See `memory/facts.ts`. */
+export type FactKind =
+  | 'preference'
+  | 'habit'
+  | 'workflow'
+  | 'skill'
+  | 'project'
+  | 'relationship'
+  | 'goal'
+  | 'context';
+
+export const FACT_KINDS: FactKind[] = [
+  'preference',
+  'habit',
+  'workflow',
+  'skill',
+  'project',
+  'relationship',
+  'goal',
+  'context',
+];
+
+/** Where a fact came from. `told` is the person saying it; `corrected` is the
+ *  person overriding a goal buddy proposed — the strongest signal there is. */
+export type FactSource = 'observed' | 'told' | 'run' | 'corrected';
+
+/** `pinned` facts are the person's word and never fade or get rewritten by a
+ *  model. `rejected` ones are kept so they are never learned again. */
+export type FactStatus = 'active' | 'pinned' | 'rejected' | 'superseded';
+
+export interface FactView {
+  id: number;
+  kind: FactKind;
+  statement: string;
+  /** The belief as of `lastSeenAt`. */
+  confidence: number;
+  /** The belief now: `confidence` decayed by age. This is the number prompts
+   *  and the UI use. */
+  effective: number;
+  /** Below the floor buddy no longer brings it up, though it still shows it
+   *  here so the person can see what is fading. */
+  dormant: boolean;
+  evidence: number;
+  source: FactSource;
+  status: FactStatus;
+  supersededBy: number | null;
+  createdAt: number;
+  updatedAt: number;
+  lastSeenAt: number;
+  sourceObs: number[];
+}
+
+/** How the goal that ran relates to the one buddy proposed. */
+export type GoalSource = 'accepted' | 'alternative' | 'corrected' | 'typed' | 'provisional';
+
+export interface EpisodeView {
+  id: number;
+  runId: number;
+  kind: 'run' | 'correction';
+  ts: number;
+  goal: string;
+  inferredGoal: string | null;
+  goalSource: GoalSource;
+  status: string;
+  summary: string;
+  apps: string[];
+  steps: number;
+  costUsd: number;
+  learnedAt: number | null;
+}
+
+/** The shape of the person's week, from the free T0 signal. */
+export interface RhythmView {
+  /** How many distinct weeks the averages are over. */
+  weeks: number;
+  /** Average active minutes per week, `[weekday 0=Sunday][hour 0–23]`. */
+  grid: number[][];
+  /** The app with the most time in each cell, or '' when there is none. */
+  topApp: string[][];
+  days: { weekday: number; start: number | null; end: number | null; minutes: number }[];
+  topApps: { appName: string; bundleId: string; minutes: number }[];
+  /** Sentences, for the UI and for prompts. */
+  summary: string[];
+  trackedSince: number | null;
+}
+
+export type MemorySource = 'note' | 'observation' | 'fact' | 'episode';
+
+export interface MemoryIndexStatus {
+  /** Null when no embedding model is loaded; search is keywords-only then. */
+  model: string | null;
+  dim: number;
+  items: number;
+  bySource: Record<MemorySource, number>;
+  /** Items written since the last sync and not yet embedded. */
+  pending: number;
+  /** sqlite-vec is loaded. Without it, nearest-neighbour search is a scan. */
+  accelerated: boolean;
+  error: string | null;
+}
+
+/** One result from hybrid recall, renderer-safe. */
+export interface MemoryHit {
+  /** `n12`, `o40`, `f3`, `e2`: source and id, the form prompts cite. */
+  ref: string;
+  source: MemorySource;
+  id: number;
+  /** The note type, fact kind, `observation`, or episode kind. */
+  kind: string;
+  title: string;
+  text: string;
+  ts: number;
+  score: number;
+  /** Cosine similarity to the query, when the vector half found it. */
+  similarity: number | null;
+  /** Which half of the search found it. */
+  matched: 'meaning' | 'words' | 'both';
+}
+
+export interface LearningStats {
+  enabled: boolean;
+  facts: number;
+  pinned: number;
+  rejected: number;
+  lastLearnedAt: number | null;
+  runs: number;
+  corrections: number;
+}
+
+export interface MemoryOverview {
+  facts: FactView[];
+  corrections: EpisodeView[];
+  runs: EpisodeView[];
+  rhythm: RhythmView;
+  index: MemoryIndexStatus;
+  learning: LearningStats;
+}
+
+export interface TeachResult {
+  fact: FactView | null;
+  /** One sentence for the UI: what was remembered, or why nothing was. */
+  note: string;
 }

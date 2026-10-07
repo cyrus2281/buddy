@@ -14,3 +14,7 @@ spike/*/buddyd-spike
 # derived from are checked in; these are build output.
 evals/goal-inference/fixtures/*.shot.json
 evals/goal-inference/shots/
+
+# The embedding model (~30 MB), fetched at a pinned revision and verified by
+# SHA-256 by `npm run fetch:model`, which postinstall, dev and build all run.
+resources/models/

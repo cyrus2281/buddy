@@ -1184,16 +1184,16 @@ async function run() {
     return 'spending money to be told there is nothing to say is a bad trade';
   });
 
-  await check('`notes.embedding` is NULL everywhere — vector search is a backfill, not a migration', () => {
+  await check('`notes.embedding` stays NULL — vectors live in the memory index (M5)', () => {
     wipe();
     notes.create({ type: 'recap', title: 'a', body: 'b' });
     tasks.upsert({ title: 'c' });
     const rows = getDb().prepare('SELECT embedding FROM notes').all() as { embedding: unknown }[];
     ok(rows.length >= 2, 'there are notes to check');
     ok(rows.every((r) => r.embedding === null), 'every embedding is NULL');
-    const cols = getDb().prepare('PRAGMA table_info(notes)').all() as { name: string }[];
-    ok(cols.some((c) => c.name === 'embedding'), 'and the column exists, so adding sqlite-vec is a backfill job');
-    return 'PRD §9: the seam is present and deliberately unused in v1';
+    const tables = getDb().prepare("SELECT name FROM sqlite_master WHERE name IN ('memory_vectors', 'memory_fts')").all();
+    eq(tables.length, 2, 'the memory index that replaced the column exists');
+    return 'PRD §9: the seam was used — by one index for notes, observations, facts and runs';
   });
 
   await check('the Q&A context does not smuggle in screenshots', async () => {

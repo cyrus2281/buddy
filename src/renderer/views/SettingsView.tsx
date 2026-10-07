@@ -317,6 +317,24 @@ export function SettingsView({
             />
           </Field>
 
+          <div className="flex items-center justify-between border-t border-ink-700/60 pt-4">
+            <div>
+              <p className="text-[12px] font-medium text-fog-100">Learn about me</p>
+              <p className="mt-0.5 max-w-md text-[11px] leading-relaxed text-fog-500">
+                Each hourly summary also learns durable things about you — preferences, habits, how
+                you do recurring work, who people are — and every run and every goal you correct
+                teaches it more. buddy uses what it learned when it reads your screen, answers, or
+                acts. Off, it stops learning and stops using it; nothing is deleted. Everything it
+                learned is on the You tab, where each belief can be confirmed, rejected or edited.
+              </p>
+            </div>
+            <Toggle
+              checked={settings.learningEnabled}
+              label="Learn about me"
+              onChange={(v) => void update({ learningEnabled: v })}
+            />
+          </div>
+
           <div className="flex flex-wrap items-center gap-2.5 border-t border-ink-700/60 pt-4">
             <Button onClick={() => void api.observeNow()}>Observe now</Button>
             <Button onClick={() => void api.rollupNow()}>Summarise now</Button>

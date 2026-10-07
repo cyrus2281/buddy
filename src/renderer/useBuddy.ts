@@ -57,6 +57,9 @@ export function useBuddy() {
    *  that are gone. */
   const [purgeVersion, setPurgeVersion] = useState(0);
   const [voice, setVoice] = useState<VoiceStatus | null>(null);
+  /** M5. Bumped whenever something buddy learned changes, for the same reason
+   *  `notesVersion` exists. */
+  const [memoryVersion, setMemoryVersion] = useState(0);
 
   useEffect(() => {
     let alive = true;
@@ -118,6 +121,7 @@ export function useBuddy() {
       api.onNotesChanged(() => setNotesVersion((v) => v + 1)),
       api.onWakeups(setWakeups),
       api.onVoice(setVoice),
+      api.onMemoryChanged(() => setMemoryVersion((v) => v + 1)),
       // A key added or removed changes what the Operator and the providers can
       // do, and `setSecret` broadcasts settings — so the capability matrix is
       // re-read rather than left showing what was true at mount.
@@ -164,6 +168,7 @@ export function useBuddy() {
     operator,
     purgeVersion,
     voice,
+    memoryVersion,
     update,
     keepRate,
   };

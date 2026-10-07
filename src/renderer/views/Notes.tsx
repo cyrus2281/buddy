@@ -189,8 +189,19 @@ function Row({ note, snippet, onOpen }: { note: AnyNote; snippet?: string; onOpe
 }
 
 /** FTS5 marks matches with «» so the renderer does not have to re-find them —
- *  and so a match inside a word is still visible. */
+ *  and so a match inside a word is still visible. A leading ≈ is main saying
+ *  the note matched by meaning and shares no word with the search (M5). */
 function Snippet({ text }: { text: string }) {
+  if (text.startsWith('≈ ')) {
+    return (
+      <>
+        <span className="mr-1 rounded bg-ember-500/15 px-1 font-mono text-[9px] text-ember-300" title="Matched by meaning, not by any word you typed">
+          related
+        </span>
+        {text.slice(2)}
+      </>
+    );
+  }
   return (
     <>
       {text.split(/(«[^»]*»)/g).map((part, i) =>

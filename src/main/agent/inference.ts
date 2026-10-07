@@ -5,6 +5,7 @@ import { log } from '../log.js';
 import { getDb } from '../store/db.js';
 import { notes, observations, relations, tasks } from '../store/notes.js';
 import { downscaleFrame } from '../notes/downscale.js';
+import { memory } from '../memory/service.js';
 import { anthropicModel, type ContentBlock, type StructuredClient } from '../notes/model.js';
 import { GoalInferenceSchema, type GoalInference } from '../../../prompts/goal-inference.schema.js';
 import { renderBundle, type ContextBundle, type Frame } from '../../../prompts/context-bundle.js';
@@ -114,8 +115,29 @@ export function buildBundle(signals: T0Signal[], now = Date.now()): ContextBundl
     ]),
   ];
 
+  const latest = observations.recent(OBSERVATION_COUNT);
+
+  // M5. What buddy has learned about this person, retrieved against the screen
+  // in words: the titles of what is open and the newest thing buddy wrote
+  // about it. Each field is set only when it has something in it, so a bundle
+  // with no memory is byte-for-byte the bundle the eval was tuned on.
+  const query = [
+    ...new Set([
+      ...frameRows.map((r) => r.window_title),
+      ...recentSignals.slice(-6).map((s) => s.windowTitle),
+      latest[0]?.summary ?? '',
+    ]),
+  ]
+    .filter(Boolean)
+    .join('. ');
+  const mem = memory.forInference(query, now);
+
   return {
     now: iso(now),
+    ...(mem?.profile.length ? { profile: mem.profile } : {}),
+    ...(mem?.corrections.length ? { corrections: mem.corrections } : {}),
+    ...(mem?.rhythm ? { rhythm: mem.rhythm } : {}),
+    ...(mem?.recalled.length ? { recalled: mem.recalled } : {}),
     relations: relations.matchingApps(appsOnScreen).map((r) => ({
       kind: r.kind,
       displayName: r.displayName,
@@ -131,7 +153,7 @@ export function buildBundle(signals: T0Signal[], now = Date.now()): ContextBundl
       body: t.body,
       lastSeenAt: iso(t.lastSeenAt),
     })),
-    observations: observations.recent(OBSERVATION_COUNT).map((o) => ({
+    observations: latest.map((o) => ({
       tsStart: iso(o.tsStart),
       tsEnd: iso(o.tsEnd),
       summary: o.summary,
@@ -232,5 +254,7 @@ export function bundleSize(b: ContextBundle) {
     observations: b.observations.length,
     signals: b.signals.length,
     notes: notes.stats().recaps,
+    learned: (b.profile?.length ?? 0) + (b.recalled?.length ?? 0),
+    corrections: b.corrections?.length ?? 0,
   };
 }
