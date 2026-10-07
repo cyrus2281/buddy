@@ -76,6 +76,9 @@ const CLAMPS: Partial<Record<keyof Settings, [number, number]>> = {
   // A one-second poll would hammer SQLite for a feature whose unit is minutes;
   // ten minutes would make a five-minute wakeup fire late by half its interval.
   wakePollMs: [2_000, 120_000],
+  // Past a second and a half the ghost stops being a preview and starts being
+  // a delay on every click.
+  ghostLeadMs: [0, 1_500],
 };
 
 class SettingsStore extends EventEmitter {
@@ -137,6 +140,9 @@ class SettingsStore extends EventEmitter {
     out.voiceEnabled = !!out.voiceEnabled;
     out.learningEnabled = out.learningEnabled !== false;
     out.handsOffDefault = !!out.handsOffDefault;
+    out.islandEnabled = out.islandEnabled !== false;
+    out.ghostCursor = out.ghostCursor !== false;
+    if (out.islandPlacement !== 'main') out.islandPlacement = 'notch';
     if (out.defaultProfile !== 'attended' && out.defaultProfile !== 'unattended') {
       // §7.1: leashless is never a default. A stored blob that says otherwise —
       // an older version, a hand-edited database — is corrected rather than

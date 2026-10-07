@@ -2,6 +2,8 @@ import React, { useEffect, useState } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
 import { useBuddy } from './useBuddy.js';
 import { Hud } from './views/Hud.js';
+import { IslandView } from './views/Island.js';
+import { GhostView } from './views/Ghost.js';
 import { Home } from './views/Home.js';
 import { Notes } from './views/Notes.js';
 import { You } from './views/You.js';
@@ -23,7 +25,9 @@ const TABS: { id: Tab; label: string }[] = [
   { id: 'logs', label: 'Log' },
 ];
 
-export function App({ hud }: { hud: boolean }) {
+export function App({ hud, surface = null }: { hud: boolean; surface?: 'island' | 'ghost' | null }) {
+  if (surface === 'island') return <IslandView />;
+  if (surface === 'ghost') return <GhostView />;
   if (hud) return <Hud />;
   return <Shell />;
 }

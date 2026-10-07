@@ -162,10 +162,12 @@ func handle(_ req: RPCRequest) {
         }
         let maxW = req.params["maxWidth"]?.intValue
         let maxH = req.params["maxHeight"]?.intValue
+        let includeSelf = req.params["includeSelf"]?.boolValue ?? false
         let id = req.id
         Task {
             do {
-                let r = try await Capture.capture(target: target, to: path, maxWidth: maxW, maxHeight: maxH)
+                let r = try await Capture.capture(target: target, to: path, maxWidth: maxW, maxHeight: maxH,
+                                                  includeSelf: includeSelf)
                 Out.result(id: id, r.dictionary)
             } catch let e as RPCError {
                 Out.error(id: id, e)

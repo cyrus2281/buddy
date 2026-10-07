@@ -19,6 +19,7 @@ import { StandbyManager } from './agent/standby.js';
 import { notify } from './notify.js';
 import { VoiceListener } from './voice/listener.js';
 import { routeIntent } from './voice/route.js';
+import { island } from './island.js';
 import { CH } from '../shared/ipc.js';
 import type { AppState, VoiceIntent } from '../shared/types.js';
 
@@ -223,9 +224,12 @@ async function main() {
   // buddy steals nothing, the person is working in another app, and a HUD
   // that refused to get out of their way would be the opposite of the mode.
   setHudSticky(() => operator.isRunning() && !operator.active()?.handsOff);
-  // A hands-off run asks without taking the keyboard (see `showHudPassive`).
+  // A gate needs an answer, so it brings the HUD back if the island sent it
+  // away — and a hands-off run asks without taking the keyboard (see
+  // `showHudPassive`).
   operator.on('gate', () => {
     if (operator.active()?.handsOff) showHudPassive();
+    else if (!isHudVisible()) showHudNow();
   });
 
   // Retention runs before capture starts: a machine that was asleep overnight
@@ -245,6 +249,14 @@ async function main() {
     log.error('app', 'sidecar unavailable at launch', { error: (e as Error).message });
   }
   sidecar.on('status', (st) => broadcast(CH.onSidecar, st));
+  // The island needs the notch geometry, which only buddyd can read — so it
+  // starts after the sidecar, and re-reads the displays whenever a fresh
+  // buddyd comes up.
+  void island.start();
+  sidecar.on('ready', () => void island.refreshDisplays());
+  operator.setIntentSink((i) => island.intent(i));
+  island.onAction('open-hud', () => showHud());
+  island.onAction('dismiss-notice', () => island.showNotice(null));
   // After the sidecar, because buddyd holds the microphone. A later restart of
   // buddyd re-arms it on its own (`ready`).
   void voice.reconcile();
@@ -327,8 +339,11 @@ async function main() {
     }
     if (v.status === 'running') notifiedNeedsHuman = 0;
     // A hands-off run happens out of sight, so its ending is brought back into
-    // view — passively, for the same reason its gates are.
-    if (v.handsOff && ['done', 'needs_human', 'waiting'].includes(v.status)) showHudPassive();
+    // view — passively, for the same reason its gates are. With the island on,
+    // the island says it instead.
+    if (v.handsOff && !settings.get().islandEnabled && ['done', 'needs_human', 'waiting'].includes(v.status)) {
+      showHudPassive();
+    }
     // A run's own terminal state decides where the app lands; standby is the
     // one that outlives the run.
     if (v.status === 'waiting') {
@@ -510,6 +525,7 @@ app.on('will-quit', async (e) => {
   // the observations survive to be rolled up at next launch either way.
   engine?.stop();
   memory.stop();
+  island.stop();
   scheduler?.stop();
   await sidecar.stop();
   closeDb();

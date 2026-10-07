@@ -288,21 +288,22 @@ export function Hud() {
   // §8.1: collapse to a pill three seconds in, so the HUD stops covering the
   // work it is doing. Hover or the hotkey brings it back.
   //
-  // Hands-off goes further and gets out of the way entirely: the person is
-  // working in another app, and buddy's work is not happening on screen
-  // anyway. A gate or the run's end brings the HUD back, without focus.
+  // With the island on, the pill has a better home — the notch — so the HUD
+  // gets out of the way entirely instead of collapsing; Stop is on the island
+  // (hover) and on the hotkey. Hands-off goes sooner still: the person is
+  // working in another app. A gate brings the HUD back either way.
   useEffect(() => {
     if (phase !== 'acting' || gate) {
       setCollapsed(false);
       return;
     }
-    if (run?.handsOff && running) {
-      const t = setTimeout(() => void api.hideHud(), 1800);
+    if (running && (run?.handsOff || settings?.islandEnabled)) {
+      const t = setTimeout(() => void api.hideHud(), run?.handsOff ? 1800 : 3000);
       return () => clearTimeout(t);
     }
     const t = setTimeout(() => setCollapsed(true), 3000);
     return () => clearTimeout(t);
-  }, [phase, gate, run?.handsOff, running]);
+  }, [phase, gate, run?.handsOff, running, settings?.islandEnabled]);
 
   // The window is sized to its content, so a pill is actually a pill.
   useLayoutEffect(() => {

@@ -5,7 +5,7 @@ import { runPaths } from '../store/runs.js';
 import { classify, type TargetInfo } from './guardrails.js';
 import { ACT_VERBS, type HandsOffTool } from './tools.js';
 import type { AxActResult, AxLook } from '../sidecar/supervisor.js';
-import type { Allowlist, GuardVerdict, RunProfile } from '../../shared/types.js';
+import type { Allowlist, GhostIntent, GuardVerdict, RunProfile } from '../../shared/types.js';
 
 /// The executor: the one place a `CGEvent` is dispatched, and therefore the one
 /// place guardrails are enforced (PRD §7.2).
@@ -75,10 +75,45 @@ const ACTIONS_WITH_COORDINATE = new Set([
   'scroll',
 ]);
 
+/** Where the ghost cursor is told about the next action, and how far ahead.
+ *  Null — the default, and what every check that does not ask for it gets — is
+ *  no ghost and no delay. */
+export interface IntentSink {
+  send: (i: Omit<GhostIntent, 'runId'>) => void;
+  leadMs: () => number;
+}
+
+/** What the ghost previews, and as what. Screenshots, zooms, waits and cursor
+ *  reads are not things a person needs warning of. */
+const GHOST_KIND: Record<string, GhostIntent['kind']> = {
+  left_click: 'click',
+  middle_click: 'click',
+  triple_click: 'double',
+  double_click: 'double',
+  right_click: 'right',
+  mouse_move: 'move',
+  left_mouse_down: 'click',
+  left_mouse_up: 'click',
+  left_click_drag: 'drag',
+  scroll: 'scroll',
+  type: 'type',
+  key: 'key',
+  hold_key: 'key',
+};
+
 export class Executor {
   /** Monotonic across the run, so every screenshot has its own file and the Run
    *  Log can show the screen at each step. */
   private frameSeq = 0;
+
+  /** The ghost cursor (`island.ts`). Set by the orchestrator for a shared-hands
+   *  run; never consulted by `executeHands`, which must not draw on the
+   *  person's screen at all. */
+  intents: IntentSink | null = null;
+
+  /** Where the last pointer action went, so a `type` or `key` — which has no
+   *  coordinate — is previewed where the text is actually going. */
+  private lastPoint: { x: number; y: number } | null = null;
 
   /** §6.2: `screenPoint = origin + modelCoord / scale`. The only translation in
    *  the product. A scale other than 1.0 means the display did not fit Opus 5's
@@ -143,6 +178,7 @@ export class Executor {
 
     const target = await this.targetInfo(screenPoint);
     const verdict = classify({ action, input, target, allowlist: ctx.allowlist, profile: ctx.profile });
+    this.lastFrame = frame;
 
     if (verdict.decision === 'deny') {
       log.warn('executor', 'action denied', {
@@ -155,10 +191,16 @@ export class Executor {
     }
     if (verdict.decision === 'confirm' && !ctx.preApproved) {
       log.info('executor', 'action gated, awaiting the user', { action, class: verdict.class });
+      // The ghost waits on the thing being asked about, so the gate's "the
+      // Send button" has a place on screen. Only for an ask, never a deny:
+      // previewing an action buddy will not take would be showing intent it
+      // does not have.
+      this.preview(action, input, screenPoint, verdict, true);
       return { kind: 'gate', verdict };
     }
 
     // ── Dispatch ──────────────────────────────────────────────────────────
+    await this.preview(action, input, screenPoint, verdict, false);
     try {
       if (IMAGE_ACTIONS.has(action)) {
         const f = await this.capture(ctx.runId, action === 'zoom' ? this.zoomRegion(input, frame) : null);
@@ -184,6 +226,53 @@ export class Executor {
       return { kind: 'error', text: msg, verdict };
     }
   }
+
+  /**
+   * Tell the ghost cursor where this is about to land, then give it time to
+   * get there. After classification and before dispatch, so the ghost only
+   * ever previews something buddy is actually about to do.
+   */
+  private async preview(
+    action: string,
+    input: Record<string, unknown>,
+    point: { x: number; y: number } | null,
+    verdict: GuardVerdict,
+    pending: boolean,
+  ): Promise<void> {
+    const kind = GHOST_KIND[action];
+    if (!this.intents || !kind) return;
+    let at = point ?? this.lastPoint;
+    let to: { x: number; y: number } | undefined;
+    if (action === 'left_click_drag' && point && this.lastFrame) {
+      // `execute` resolved `coordinate` — the far end — as the point; the
+      // drag starts at `start_coordinate`.
+      const start = this.coordOf(input, 'start_coordinate');
+      if (start) {
+        at = Executor.translate(start, this.lastFrame);
+        to = point;
+      }
+    }
+    if (!at) return;
+    if (point) this.lastPoint = point;
+    const label =
+      kind === 'type'
+        ? String(input.text ?? '').slice(0, 48)
+        : kind === 'key'
+          ? String(input.text ?? '')
+          : verdict.target && verdict.target !== verdict.appName
+            ? verdict.target
+            : '';
+    const leadMs = pending ? 0 : Math.max(0, this.intents.leadMs());
+    try {
+      this.intents.send({ kind: pending ? 'pending' : kind, x: at.x, y: at.y, ...(to ? { to } : {}), label, leadMs, at: Date.now() });
+    } catch {
+      return; // a ghost that cannot be drawn is not a reason to stop a run
+    }
+    if (leadMs > 0 && (kind !== 'type' && kind !== 'key')) await new Promise((r) => setTimeout(r, leadMs));
+  }
+
+  /** The frame the last dispatch translated against, for a drag's far end. */
+  private lastFrame: Frame | null = null;
 
   /** Coordinates leave the model's pixel space here and nowhere else. */
   private toSidecarParams(

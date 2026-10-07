@@ -12,6 +12,7 @@ import type {
   TeachResult,
   FrameRow,
   GateAnswer,
+  GhostIntent,
   InferenceState,
   LogEntry,
   NoteDetail,
@@ -40,6 +41,8 @@ import type {
   VoiceStatus,
   WakeupView,
 } from './types.js';
+
+import type { IslandNotice, IslandPlacement } from './island.js';
 
 /// The IPC contract, written once and imported by main, preload, and renderer.
 /// Channel names live here as constants so a typo is a compile error rather
@@ -123,6 +126,12 @@ export const CH = {
   forgetLearned: 'buddy:forgetLearned',
   rebuildMemoryIndex: 'buddy:rebuildMemoryIndex',
 
+  // The island and the ghost cursor
+  setIslandInteractive: 'buddy:setIslandInteractive',
+  getIsland: 'buddy:getIsland',
+  showHud: 'buddy:showHud',
+  islandAction: 'buddy:islandAction',
+
   // Voice — "hey buddy"
   getVoiceStatus: 'buddy:getVoiceStatus',
   requestVoicePermission: 'buddy:requestVoicePermission',
@@ -150,6 +159,9 @@ export const CH = {
   onVoice: 'buddy:voice',
   onVoiceCommand: 'buddy:voiceCommand',
   onMemoryChanged: 'buddy:memoryChanged',
+  onIntent: 'buddy:intent',
+  onIslandPlacement: 'buddy:islandPlacement',
+  onIslandNotice: 'buddy:islandNotice',
   hudShown: 'hud:shown',
   hudHidden: 'hud:hidden',
 } as const;
@@ -317,6 +329,20 @@ export interface BuddyApi {
   /** The HUD measures its own content and asks for the height; a fixed window
    *  would either clip the live feed or float a pill in a 420px void. */
   hudResize(height: number): Promise<void>;
+  /** The island, as the pointer enters or leaves the shape it draws: it is
+   *  click-through everywhere else. */
+  setIslandInteractive(on: boolean): Promise<void>;
+  /** Where the island is and any notice it is holding, pulled on mount: a push
+   *  sent at `did-finish-load` can arrive before React has subscribed. */
+  getIsland(): Promise<{ placement: IslandPlacement | null; notice: IslandNotice | null }>;
+  /** Open the HUD with focus — from a click on the island, which is the person
+   *  asking to see it. */
+  showHud(): Promise<void>;
+  /** A notice's button, by name. */
+  islandAction(action: string): Promise<void>;
+  onIntent(fn: (i: GhostIntent) => void): () => void;
+  onIslandPlacement(fn: (p: IslandPlacement) => void): () => void;
+  onIslandNotice(fn: (n: IslandNotice | null) => void): () => void;
   cancelArm(): Promise<void>;
 
   onStats(fn: (s: CaptureStats) => void): () => void;

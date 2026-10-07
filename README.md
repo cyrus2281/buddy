@@ -36,6 +36,12 @@ the keyboard you are using. buddy presses buttons, fills fields and opens apps
 through each app's accessibility tree, in windows that stay behind yours — so
 you keep typing in your editor while it replies in Slack.
 
+**And you can see what it is about to do.** buddy's status lives in the
+MacBook's notch — invisible at rest, wings either side while it works, a
+sentence that drops down for each step, a question, or an outcome — and a ghost
+cursor glides to each click a moment before it happens, naming what it is
+aiming at.
+
 The typed goal is still there. It is now the override, not the entry point.
 
 ## Requirements
@@ -221,6 +227,72 @@ exposes through accessibility is the app's decision: a canvas, a game or a
 thin Electron UI gives hands-off little to act on, which is why it is a switch
 per run rather than the only way buddy works.
 
+## The island and the ghost cursor
+
+**On by default; both are in Settings › The island and the ghost cursor.**
+
+**The island** is buddy's status, in the notch. The notch is the one strip of a
+MacBook display that is never content — the camera is there and nothing else
+can be — so it is the one place status can sit without covering anything. At
+rest the island is *exactly* the notch, black on black, so it is invisible.
+While a run works it grows a wing either side: buddy's mark on the left (hollow
+for a hands-off run), the step count on the right. Each new step drops a
+sentence down out of the notch for a couple of seconds — the goal, what it just
+did, a progress line — then folds back to the wings, so a forty-step run does
+not hold a banner over the menu bar for ten minutes. Hover it to open it, with
+Stop. A question drops down and stays, amber, with **Review**; "done" stays for
+six seconds; "needs you" stays, red, until dismissed; standby is wings with a
+count. On a display without a notch it is a pill under the menu bar, and it can
+be moved to the main display for someone who never looks at the laptop.
+
+With the island on, the HUD no longer collapses to a pill in the middle of the
+screen — it steps aside after three seconds, and a confirm gate brings it back.
+
+**The ghost cursor** is a translucent pointer that glides to where buddy is
+about to click, names what it is aiming at ("the “Send” button"), and ripples as
+the real click lands. Typing shows a chip with the text; a shortcut shows its
+keys (⌘⇧K). While a confirm gate is open the ghost waits, pulsing, over the
+thing being asked about — so "approve clicking Send" has a place on screen. A
+denied action is never previewed: the ghost only ever shows something buddy is
+actually about to do. It is never drawn for a hands-off run, whose promise is
+to leave the person's screen alone; the island says what it is doing instead.
+
+### The parts worth knowing about
+
+**The executor tells the ghost after classifying and before dispatching, and
+then waits.** The lead (280 ms by default, a setting) is actually waited on
+every click, so the ghost arrives first; typing is previewed with no wait, so it
+does not slow a run that types a paragraph. A run with the ghost off waits for
+nothing.
+
+**buddy's own windows are left out of every screenshot buddy takes.** The HUD,
+Home, the island and the ghost all belong to the Electron process that is
+buddyd's parent, and buddyd now excludes that process from display captures.
+Before this, a run's screenshots could include the HUD's own pill; now the
+model never reads its own status and never sees the ghost it would otherwise be
+tempted to click, and an observation never records buddy looking at buddy.
+
+**Both windows can never take focus.** They are non-activating panels, created
+unfocusable; the ghost is never interactive, and the island is click-through
+everywhere except the shape it is drawing, and only while the pointer is over
+it — so the menu bar either side keeps working.
+
+**The notch geometry comes from buddyd**, because Electron does not expose
+`safeAreaInsets`: the camera housing is the gap between `auxiliaryTopLeftArea`
+and `auxiliaryTopRightArea`, as tall as the top inset.
+
+### What is real, and what is not
+
+`npm run check:island` pins the placement and every state against this Mac's
+shape (a 185 × 32 notch on a 1728-point panel beside a monitor), measures the
+ghost contract through the real executor and the real Operator — the intent
+arrives before the event and the lead is waited; a gate holds the ghost; a deny
+and a hands-off run draw nothing — and then, for real: a magenta window this
+suite opens is in buddyd's capture only when asked for, and the island window
+sits at the display's top edge, over the menu bar, unfocusable.
+`BUDDY_ISLAND_TOUR=<dir> npm run check:island` also photographs every island
+state and the ghost on this screen.
+
 ## Commands
 
 | | |
@@ -234,6 +306,7 @@ per run rather than the only way buddy works.
 | `npm run check:m4` | The M4 exit-criteria checks (50 of them) |
 | `npm run check:voice` | The "hey buddy" checks (21 of them) — matcher, routing, the listener, and the real `buddyd` |
 | `npm run check:memory` | The M5 checks (39 of them) — the real embedder, the real sqlite-vec index, retrieval quality on a benchmark, learning through a scripted rollup |
+| `npm run check:island` | The island and ghost-cursor checks (15 of them) — placement, every state, the ghost's contract with the executor, and real captures. `BUDDY_ISLAND_TOUR=<dir>` also photographs every state |
 | `npm run check:hands` | The hands-off checks (26 of them) — the tool surface, the guardrails against the named app, the loop, and a real press, value and window capture through the real `buddyd` |
 | `npm run live:run` | One real two-app run against a live Opus 5 (needs `ANTHROPIC_API_KEY`) |
 | `npm run live:standby` | Story B end to end against live Opus 5 + Haiku 4.5 |

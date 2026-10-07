@@ -8,7 +8,8 @@ import { retention } from './store/retention.js';
 import { frames } from './store/frames.js';
 import { paths } from './paths.js';
 import { log } from './log.js';
-import { broadcast, createHome, hideHud, resizeHud } from './windows.js';
+import { broadcast, createHome, hideHud, resizeHud, showHud } from './windows.js';
+import { island } from './island.js';
 import { operator } from './agent/orchestrator.js';
 import { runs } from './store/runs.js';
 import fs from 'node:fs';
@@ -212,6 +213,10 @@ export function registerIpc(ctx: Ctx) {
   ipcMain.handle(CH.deleteRun, (_e, runId: number) => operator.deleteRun(runId));
   ipcMain.handle(CH.armHud, () => ctx.setState('ARMED'));
   ipcMain.handle(CH.hudResize, (_e, height: number) => resizeHud(height));
+  ipcMain.handle(CH.setIslandInteractive, (_e, on: boolean) => island.setInteractive(!!on));
+  ipcMain.handle(CH.getIsland, () => island.current());
+  ipcMain.handle(CH.showHud, () => showHud());
+  ipcMain.handle(CH.islandAction, (_e, action: string) => island.runAction(String(action)));
   ipcMain.handle(CH.cancelArm, () => {
     if (!operator.isRunning()) ctx.setState(ctx.scheduler.isRunning() ? 'OBSERVING' : 'IDLE');
   });

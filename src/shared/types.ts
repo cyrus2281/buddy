@@ -54,6 +54,11 @@ export interface DisplayInfo {
   backingScaleFactor: number;
   modelScale: number;
   isMain: boolean;
+  builtIn: boolean;
+  /** The camera housing, global x / width / height in points; null on a
+   *  display without one. Where the island lives. */
+  notch: { x: number; width: number; height: number } | null;
+  menuBarHeight: number;
 }
 
 export interface FrameRow {
@@ -201,6 +206,21 @@ export interface Settings {
    *  narrower way to work — an app with a poor accessibility tree is one it
    *  cannot do much in without the mouse. */
   handsOffDefault: boolean;
+
+  // The island and the ghost cursor.
+  /** buddy's status in the notch (or under the menu bar on a display without
+   *  one). */
+  islandEnabled: boolean;
+  /** `notch` uses a notched display when there is one; `main` always uses the
+   *  main display, for someone who never looks at the laptop screen. */
+  islandPlacement: 'notch' | 'main';
+  /** A translucent pointer that glides to where the next click will land a
+   *  moment before it does. Never drawn for hands-off runs, whose whole
+   *  promise is to leave the person's screen alone. */
+  ghostCursor: boolean;
+  /** How long the ghost arrives ahead of the real event. Long enough to read,
+   *  short enough not to make every run feel slower. */
+  ghostLeadMs: number;
 }
 
 /** The six things buddy asks Claude to do, each on its own model.
@@ -300,6 +320,10 @@ export const DEFAULT_SETTINGS: Settings = {
   voiceEnabled: false,
   learningEnabled: true,
   handsOffDefault: false,
+  islandEnabled: true,
+  islandPlacement: 'notch',
+  ghostCursor: true,
+  ghostLeadMs: 280,
   voiceConfirmPhrases: [
     'take over',
     'take it over',
@@ -506,6 +530,25 @@ export interface RunView {
    *  first attempt. The budgets restart on each resume, so this is what makes
    *  the run row's cumulative steps and cost explicable. */
   resumes: number;
+}
+
+/**
+ * Where the next action is about to land, sent to the ghost cursor before the
+ * real event is dispatched. Global points, the same space `CGEvent` uses —
+ * the overlay window for the display converts them to its own.
+ */
+export interface GhostIntent {
+  runId: number;
+  kind: 'click' | 'double' | 'right' | 'move' | 'drag' | 'scroll' | 'type' | 'key' | 'pending';
+  x: number;
+  y: number;
+  /** The far end of a drag. */
+  to?: { x: number; y: number };
+  /** What it is: the button's name, the text being typed, the key. */
+  label: string;
+  /** How long until the real event fires. */
+  leadMs: number;
+  at: number;
 }
 
 export interface StartRunRequest {

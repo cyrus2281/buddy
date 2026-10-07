@@ -23,6 +23,7 @@
     "check:voice": "electron-vite build && electron out/main/voice-checks.js",
     "check:memory": "npm run fetch:model && electron-vite build && electron out/main/memory-checks.js",
     "check:hands": "electron-vite build && electron out/main/hands-checks.js",
+    "check:island": "electron-vite build && electron out/main/island-checks.js",
     "live:run": "electron-vite build && electron out/main/live-run.js",
     "live:standby": "electron-vite build && electron out/main/live-standby.js",
     "live:learn": "npm run fetch:model && electron-vite build && electron out/main/live-learn.js"

@@ -495,6 +495,82 @@ export function SettingsView({
       </Section>
 
       <Section
+        title="The island and the ghost cursor"
+        hint="Where buddy shows what it is doing, and how it previews where it is about to click."
+      >
+        <Card className="flex flex-col gap-5 p-4">
+          <div className="flex items-start justify-between gap-5">
+            <div className="min-w-0">
+              <p className="text-[12px] font-medium text-fog-100">Status in the notch</p>
+              <p className="mt-1 text-[11px] leading-relaxed text-fog-500">
+                buddy lives in the notch: invisible at rest, wings either side while it works,
+                and a sentence that drops down for each new step, a question, or an outcome. On
+                a display without a notch it is a pill under the menu bar. It never takes focus,
+                and it is left out of the screenshots buddy reads.
+              </p>
+            </div>
+            <Toggle
+              checked={settings.islandEnabled}
+              label="Status in the notch"
+              onChange={(v) => void update({ islandEnabled: v })}
+            />
+          </div>
+          {settings.islandEnabled && (
+            <Field label="Show it on" hint="The notch is the one place status can sit without covering anything — but not if you never look at the laptop screen.">
+              <div className="flex gap-2">
+                {(
+                  [
+                    ['notch', 'The notched display'],
+                    ['main', 'The main display'],
+                  ] as const
+                ).map(([v, label]) => (
+                  <button
+                    key={v}
+                    onClick={() => void update({ islandPlacement: v })}
+                    className={`rounded-lg border px-3 py-1.5 text-[12px] transition-colors ${
+                      settings.islandPlacement === v
+                        ? 'border-ember-500/60 bg-ember-500/10 text-fog-100'
+                        : 'border-ink-700 text-fog-300 hover:border-ink-600'
+                    }`}
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
+            </Field>
+          )}
+          <div className="flex items-start justify-between gap-5 border-t border-ink-700/60 pt-4">
+            <div className="min-w-0">
+              <p className="text-[12px] font-medium text-fog-100">Ghost cursor</p>
+              <p className="mt-1 text-[11px] leading-relaxed text-fog-500">
+                A translucent pointer glides to where buddy is about to click, names what it is
+                aiming at, and ripples as the click lands — so you can follow a run rather than
+                watch the cursor jump. It waits over the thing a confirmation is about. Never
+                drawn for hands-off runs.
+              </p>
+            </div>
+            <Toggle
+              checked={settings.ghostCursor}
+              label="Ghost cursor"
+              onChange={(v) => void update({ ghostCursor: v })}
+            />
+          </div>
+          {settings.ghostCursor && (
+            <Field label="Lead" hint="How far ahead of the real click the ghost arrives. Each click waits this long.">
+              <NumberInput
+                value={settings.ghostLeadMs}
+                min={0}
+                max={1500}
+                step={20}
+                suffix="ms"
+                onChange={(n) => void update({ ghostLeadMs: n })}
+              />
+            </Field>
+          )}
+        </Card>
+      </Section>
+
+      <Section
         title="Runs"
         hint="What a run starts with when goal inference has not seeded it. The allowlist is per run and confirmed in the same keystroke as the goal — this is the fallback, and what a typed goal uses. It does not apply to leashless, which has no allowlist."
       >

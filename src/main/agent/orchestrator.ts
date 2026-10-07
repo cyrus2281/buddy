@@ -6,9 +6,9 @@ import { runs } from '../store/runs.js';
 import { AnthropicClient, type ModelClient } from './client.js';
 import { killSwitches } from './killswitch.js';
 import { AgentRunner, type ResumeRunRequest } from './runner.js';
-import type { Executor } from './executor.js';
+import { Executor } from './executor.js';
 import { NO_ANTHROPIC_KEY, anthropicBaseUrl } from '../providers.js';
-import type { GateAnswer, KillSwitch, PendingGate, RunStep, RunView, StartRunRequest } from '../../shared/types.js';
+import type { GateAnswer, GhostIntent, KillSwitch, PendingGate, RunStep, RunView, StartRunRequest } from '../../shared/types.js';
 
 /// One run at a time, and one place that knows which.
 ///
@@ -23,6 +23,13 @@ export class Operator extends EventEmitter {
   private clientFactory: (() => ModelClient) | null = null;
   private executorFactory: (() => Executor) | null = null;
   private memoryProvider: ((goal: string) => string | null) | null = null;
+  private intentSink: ((i: GhostIntent) => void) | null = null;
+
+  /** The ghost cursor (`island.ts`). Set at launch; unset in the checks that
+   *  do not ask for it, which therefore run with no ghost and no lead delay. */
+  setIntentSink(f: ((i: GhostIntent) => void) | null) {
+    this.intentSink = f;
+  }
 
   /** Overridden in the M2 checks so the loop can be driven by a scripted model
    *  without a network or a key. */
@@ -136,10 +143,20 @@ export class Operator extends EventEmitter {
   }
 
   private build(client: ModelClient): AgentRunner {
+    const executor = this.executorFactory ? this.executorFactory() : new Executor();
+    const sink = this.intentSink;
+    if (sink && !executor.intents) {
+      executor.intents = {
+        send: (i) => {
+          if (settings.get().ghostCursor) sink({ ...i, runId: this.current?.id ?? 0 });
+        },
+        leadMs: () => (settings.get().ghostCursor ? settings.get().ghostLeadMs : 0),
+      };
+    }
     return new AgentRunner({
       client,
       killSwitches,
-      ...(this.executorFactory ? { executor: this.executorFactory() } : {}),
+      executor,
       ...(this.memoryProvider ? { memory: this.memoryProvider } : {}),
     });
   }

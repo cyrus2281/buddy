@@ -620,6 +620,11 @@ Frameless, always-on-top, vibrant, centered, ~560 px wide. Springs in on the hot
 - **Confirm gate** — slides in over the HUD naming the exact action and the element it targets. Approve / Deny / Stop run.
 - **NEEDS_HUMAN** — why it stopped, what it completed, Resume / Discard.
 
+### 8.1.1 The island
+
+The HUD's collapsed pill moved to the notch. See README, "The island and the
+ghost cursor", and `shared/island.ts` for the state priority.
+
 ### 8.2 Home
 Status line ("watching for 3 h 20 m · 412 frames · 18 kept"), today's recap, active task cards, a large Activate button, and a single input that accepts either a question ("what did I do this morning?") or a direct instruction.
 
@@ -940,6 +945,21 @@ held to the same policy table, while the person keeps working.
 
 **Status: built and verified** — `npm run check:hands`, 26 checks; the last
 five drive the real buddyd against a real window. See README, "Hands-off".
+
+### M7 — The island and the ghost cursor
+
+buddy's status in the notch: rest (exactly the notch), compact (wings), expanded
+(a sentence below it), with priority gate → run → ending → reading → notice →
+standby · a virtual notch under the menu bar elsewhere · a ghost cursor that
+previews each pointer action after classification and before dispatch, holds
+over a gated target, and never previews a deny or draws for hands-off · buddy's
+own windows excluded from every display capture · the HUD steps aside for the
+island.
+**Exit:** a run can be followed from the notch and the ghost alone, and neither
+ever appears in what the model sees.
+
+**Status: built and verified** — `npm run check:island`, 15 checks plus an
+optional photographed tour. See README, "The island and the ghost cursor".
 
 ### Honest read on the timeline
 

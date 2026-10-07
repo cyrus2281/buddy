@@ -55,8 +55,22 @@ enum Capture {
         case region(CGRect)
     }
 
-    static func capture(target: Target, to path: String, maxWidth: Int?, maxHeight: Int?) async throws -> Result {
+    /// buddy's own windows — the HUD, Home, the island in the notch, the ghost
+    /// cursor overlay — are left out of every display capture unless asked
+    /// for. They all belong to the Electron main process, which is this
+    /// process's parent. A model reading a screenshot with buddy's own status
+    /// pill in it is reading about itself; an observation of the Home window is
+    /// buddy remembering buddy; and the ghost cursor exists to show the
+    /// *person* where the next click lands, not to be clicked.
+    static func ownApps(_ content: SCShareableContent) -> [SCRunningApplication] {
+        let parent = getppid()
+        return content.applications.filter { $0.processID == parent }
+    }
+
+    static func capture(target: Target, to path: String, maxWidth: Int?, maxHeight: Int?,
+                        includeSelf: Bool = false) async throws -> Result {
         let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
+        let hidden = includeSelf ? [] : ownApps(content)
 
         let filter: SCContentFilter
         let display: SCDisplay
@@ -74,7 +88,7 @@ enum Capture {
                 throw RPCError.invalidParams("no such display")
             }
             display = d
-            filter = SCContentFilter(display: d, excludingWindows: [])
+            filter = SCContentFilter(display: d, excludingApplications: hidden, exceptingWindows: [])
 
         case .window(let windowID):
             guard let w = content.windows.first(where: { $0.windowID == windowID }) else {
@@ -89,9 +103,10 @@ enum Capture {
             windowFrame = w.frame
 
         case .region(let rect):
-            guard let d = content.displays.first else { throw RPCError.internalError("no displays") }
+            guard let d = content.displays.first(where: { CGDisplayBounds($0.displayID).contains(CGPoint(x: rect.midX, y: rect.midY)) })
+                    ?? content.displays.first else { throw RPCError.internalError("no displays") }
             display = d
-            filter = SCContentFilter(display: d, excludingWindows: [])
+            filter = SCContentFilter(display: d, excludingApplications: hidden, exceptingWindows: [])
             cropRect = rect
         }
 
@@ -111,7 +126,15 @@ enum Capture {
         cfg.showsCursor = true
         cfg.scalesToFit = true
         cfg.pixelFormat = kCVPixelFormatType_32BGRA
-        if let r = cropRect { cfg.sourceRect = r; cfg.width = Int(r.width * backing); cfg.height = Int(r.height * backing) }
+        if let r = cropRect {
+            // `sourceRect` is in the display's own space; the region arrives in
+            // the global one. Identical on the display at the origin — which
+            // is why a zoom on any other display used to crop the wrong place.
+            let o = CGDisplayBounds(display.displayID).origin
+            cfg.sourceRect = r.offsetBy(dx: -o.x, dy: -o.y)
+            cfg.width = Int(r.width * backing)
+            cfg.height = Int(r.height * backing)
+        }
 
         let native = try await SCScreenshotManager.captureImage(contentFilter: filter, configuration: cfg)
 
