@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useLayoutEffect, useRef, useState } from
 import { AnimatePresence, motion } from 'framer-motion';
 import { api, useBuddy } from '../useBuddy.js';
 import { spring, useMotionSafe } from '../components/primitives.js';
+import { voiceGo } from '../../shared/voice.js';
 import { BudgetMeters, StepLine, describeStep } from '../components/run.js';
 import {
   Alternatives,
@@ -42,6 +43,11 @@ import type {
 /// reading gets wrong, the case where there is no key, and the case where the
 /// user simply wants something else — and it is one keystroke away rather than
 /// behind a mode.
+///
+/// **Voice is a second Enter, with stricter rules.** "Take over", "go ahead",
+/// "start" and the rest arrive from main as a `confirm` command; what the HUD
+/// does with one is `shared/voice.ts` — it waits for the reading, refuses below
+/// the confidence line and under leashless, and says why when it refuses.
 
 type Phase = 'armed' | 'typing' | 'acting' | 'ended';
 
@@ -51,7 +57,7 @@ const PROFILE_COPY: Record<RunProfile, string> = {
   leashless: 'Nobody is watching and nothing is refused. Everything is pre-approved.',
 };
 export function Hud() {
-  const { state, permissions, snapshot, run, gate, hotkeyIssues, inference, settings } = useBuddy();
+  const { state, permissions, snapshot, run, gate, hotkeyIssues, inference, settings, voice } = useBuddy();
   const [visible, setVisible] = useState(true);
   const [phase, setPhase] = useState<Phase>('armed');
   /** Null until the user types. Non-null means the typed goal wins over the
@@ -60,6 +66,10 @@ export function Hud() {
   const [profile, setProfile] = useState<RunProfile | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [collapsed, setCollapsed] = useState(false);
+  /** A spoken go-ahead not yet acted on — held while the reading is in flight. */
+  const [heardGo, setHeardGo] = useState(false);
+  /** Why the last one was not acted on, in words that say what would work. */
+  const [voiceNote, setVoiceNote] = useState<string | null>(null);
   const safe = useMotionSafe();
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const bodyRef = useRef<HTMLDivElement>(null);
@@ -114,6 +124,8 @@ export function Hud() {
         setTyped(null);
         setProfile(null);
         setError(null);
+        setHeardGo(false);
+        setVoiceNote(null);
       }
     });
     const offHide = api.onHudHidden(() => setVisible(false));
@@ -129,6 +141,8 @@ export function Hud() {
     setProfile(null);
     setPhase('armed');
     setError(null);
+    setHeardGo(false);
+    setVoiceNote(null);
     void api.cancelArm();
     void api.hideHud();
   }, []);
@@ -151,6 +165,39 @@ export function Hud() {
     },
     [allowlist, snapshot],
   );
+
+  useEffect(
+    () =>
+      api.onVoiceCommand((c) => {
+        if (c.kind === 'dismiss') {
+          // Half a typed goal is someone at the keyboard; a "never mind" heard
+          // across the room is not theirs to lose it to.
+          if (phase !== 'typing') dismiss();
+          return;
+        }
+        setVoiceNote(null);
+        setHeardGo(true);
+      }),
+    [phase, dismiss],
+  );
+
+  // The go-ahead, re-decided as the reading lands. Cleared the moment it is
+  // acted on or refused, so one utterance can start at most one run.
+  useEffect(() => {
+    if (!heardGo) return;
+    const d = voiceGo({
+      armed: phase === 'armed' && !gate && !running,
+      typed,
+      inference: inference?.phase ?? null,
+      mustAsk,
+      goal,
+      profile: effectiveProfile,
+    });
+    if (d.act === 'wait') return;
+    setHeardGo(false);
+    if (d.act === 'refuse') setVoiceNote(d.why);
+    else if (d.act === 'start') void start(goal, effectiveProfile);
+  }, [heardGo, phase, gate, running, typed, inference?.phase, mustAsk, goal, effectiveProfile, start]);
 
   /** Start typing to take over the goal. Deliberately not a button: the PRD's
    *  interaction is "Enter to run, type to amend, Esc to cancel", and putting
@@ -274,7 +321,7 @@ export function Hud() {
               <Pill run={run} />
             ) : (
               <>
-                <Header state={state} run={run} />
+                <Header state={state} run={run} listening={!!voice?.listening} />
                 <div className="px-5 py-4">
                   {blocked && phase !== 'acting' ? (
                     <Blocked
@@ -311,6 +358,9 @@ export function Hud() {
                       budgets={snapshot?.defaultBudgets}
                       abortHotkey={hotkeyIssues.find((h) => h.label === 'Abort run')?.accelerator ?? null}
                       error={error}
+                      listening={!!voice?.listening}
+                      heardGo={heardGo}
+                      voiceNote={voiceNote}
                       onPick={(g) => setTyped(g)}
                       onAmend={() => beginTyping(goal)}
                       onRun={() => goal && void start(goal, effectiveProfile)}
@@ -330,7 +380,7 @@ export function Hud() {
 
 // ── Chrome ───────────────────────────────────────────────────────────────────
 
-function Header({ state, run }: { state: string; run: RunView | null }) {
+function Header({ state, run, listening }: { state: string; run: RunView | null; listening: boolean }) {
   const label = run && run.status !== 'done' && run.status !== 'cancelled' ? run.status : state.toLowerCase();
   return (
     <header className="flex items-center justify-between border-b border-white/5 px-5 py-3">
@@ -340,6 +390,7 @@ function Header({ state, run }: { state: string; run: RunView | null }) {
         <span className="rounded-md bg-ink-700/70 px-1.5 py-0.5 font-mono text-[10px] uppercase tracking-wider text-fog-300">
           {String(label).replace('_', ' ')}
         </span>
+        {listening && <MicGlyph />}
       </div>
       <kbd className="rounded-md border border-white/10 px-1.5 py-0.5 font-mono text-[10px] text-fog-500">
         esc
@@ -370,6 +421,19 @@ function Pill({ run }: { run: RunView }) {
     </div>
   );
 }
+/** Said, not just drawn: the title names what it is listening for. macOS's own
+ *  orange dot in the menu bar says the same thing system-wide. */
+function MicGlyph() {
+  return (
+    <span title="Listening for “Hey buddy”" className="flex items-center text-fog-500" aria-label="Listening">
+      <svg width="11" height="11" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" aria-hidden>
+        <rect x="5.5" y="1.5" width="5" height="8.5" rx="2.5" />
+        <path d="M3 7.5a5 5 0 0 0 10 0M8 12.5v2" strokeLinecap="round" />
+      </svg>
+    </span>
+  );
+}
+
 // ── ARMED ────────────────────────────────────────────────────────────────────
 
 /**
@@ -394,6 +458,9 @@ function Armed({
   budgets,
   abortHotkey,
   error,
+  listening,
+  heardGo,
+  voiceNote,
   onPick,
   onAmend,
   onRun,
@@ -413,6 +480,10 @@ function Armed({
   budgets?: { maxSteps: number; maxWallClockMs: number; maxCostUsd: number };
   abortHotkey: string | null;
   error: string | null;
+  listening: boolean;
+  /** A spoken go-ahead is being held for the reading. */
+  heardGo: boolean;
+  voiceNote: string | null;
   onPick: (goal: string) => void;
   onAmend: () => void;
   onRun: () => void;
@@ -551,6 +622,18 @@ function Armed({
         </p>
       )}
 
+      {heardGo ? (
+        <p className="rounded-lg border border-ember-500/40 bg-ember-500/10 px-3 py-2 text-[11px] leading-relaxed text-ember-300">
+          Heard you. buddy starts as soon as it has read the screen — Esc to cancel.
+        </p>
+      ) : (
+        voiceNote && (
+          <p className="rounded-lg border border-ink-600 bg-ink-850/60 px-3 py-2 text-[11px] leading-relaxed text-fog-300">
+            {voiceNote}
+          </p>
+        )
+      )}
+
       <div className="flex items-center justify-between gap-3">
         <button onClick={onAmend} className="text-[11px] text-fog-500 transition-colors hover:text-fog-100">
           Type to change it
@@ -560,6 +643,9 @@ function Armed({
             <span className="font-mono text-[10px] text-fog-500/70">
               read in {(state.ms / 1000).toFixed(1)}s
             </span>
+          )}
+          {listening && !mustAsk && profile !== 'leashless' && (
+            <span className="text-[10px] text-fog-500/70">or say “go ahead”</span>
           )}
           <button
             onClick={mustAsk || !goal ? onAmend : onRun}

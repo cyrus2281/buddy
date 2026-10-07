@@ -74,6 +74,31 @@ func handle(_ req: RPCRequest) {
     case "unwatch_input":
         Out.result(id: req.id, InputMonitor.stop())
 
+    case "voice_status":
+        // Reads authorization and never asks for it; safe to call from a poll.
+        Out.result(id: req.id, Voice.status())
+
+    case "voice_devices":
+        Out.result(id: req.id, AudioDevices.summary())
+
+    case "voice_start":
+        // Each finished utterance arrives as a `voice_utterance` notification.
+        let hints = req.params["hints"]?.arrayValue?.compactMap { $0.stringValue } ?? []
+        do { Out.result(id: req.id, try Voice.start(hints: hints)) }
+        catch let e as RPCError { Out.error(id: req.id, e) }
+        catch { Out.error(id: req.id, .internalError(String(describing: error))) }
+
+    case "voice_stop":
+        Out.result(id: req.id, Voice.stop())
+
+    case "voice_request_permission":
+        // Answers when the user answers the system prompt, which can take as
+        // long as they like — hence a reply from the completion, not from here.
+        let id = req.id
+        do { try Voice.requestPermission(req.params["kind"]?.stringValue ?? "") { Out.result(id: id, $0) } }
+        catch let e as RPCError { Out.error(id: req.id, e) }
+        catch { Out.error(id: req.id, .internalError(String(describing: error))) }
+
     case "capture":
         guard let path = req.params["path"]?.stringValue else {
             Out.error(id: req.id, .invalidParams("capture requires `path`")); return

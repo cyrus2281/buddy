@@ -114,6 +114,7 @@ function Shell() {
                 notesStats={b.notesStats}
                 providers={b.providers}
                 operator={b.operator}
+                voice={b.voice}
                 update={b.update}
               />
             )}

@@ -71,6 +71,9 @@ const api: BuddyApi = {
   deleteDay: (day) => ipcRenderer.invoke(CH.deleteDay, day),
   askAboutMyDay: (question) => ipcRenderer.invoke(CH.askAboutMyDay, question),
   getProviders: () => ipcRenderer.invoke(CH.getProviders),
+  getVoiceStatus: () => ipcRenderer.invoke(CH.getVoiceStatus),
+  requestVoicePermission: (kind) => ipcRenderer.invoke(CH.requestVoicePermission, kind),
+  openVoicePermissionSettings: (kind) => ipcRenderer.invoke(CH.openVoicePermissionSettings, kind),
 
   onStats: (fn) => subscribe(CH.onStats, fn),
   onFrame: (fn) => subscribe(CH.onFrame, fn),
@@ -90,6 +93,8 @@ const api: BuddyApi = {
   onSpend: (fn) => subscribe(CH.onSpend, fn),
   onNotesChanged: (fn) => subscribe(CH.onNotesChanged, () => fn()),
   onWakeups: (fn) => subscribe(CH.onWakeups, fn),
+  onVoice: (fn) => subscribe(CH.onVoice, fn),
+  onVoiceCommand: (fn) => subscribe(CH.onVoiceCommand, fn),
   onHudShown: (fn) => subscribe(CH.hudShown, fn),
   onHudHidden: (fn) => subscribe(CH.hudHidden, fn),
 };

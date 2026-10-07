@@ -19,7 +19,7 @@ The product claim is the absence of a prompt. Every other computer-use tool asks
 ### Non-goals for v1
 
 - Windows / Linux. Signed, notarized distribution. Multi-user or cloud sync.
-- Vector search, wake-word activation, voice I/O. (All four have explicit seams — §9.)
+- Vector search, wake-word activation, voice I/O. (All four have explicit seams — §9.) *Wake-word activation has since been built behind its seam; see §9.*
 - Buddy operating a machine nobody is logged into, or across a lock screen.
 
 ---
@@ -512,6 +512,12 @@ moved the window at step 12" is frequently the entire explanation, and the Run
 Log is where a person goes to find it (§8.5). Listen-only remains the rule, so a
 wedged buddy cannot also wedge the user's keyboard.
 
+**"Buddy, stop" is a fourth way, and deliberately not one of the three.**
+When voice is on, saying it stops the run through the same `fire()` as the
+others. It must name buddy — a bare "stop" is ignored during a run, for the
+reason above — and it depends on `buddyd` and a microphone, so it is a
+convenience beside the independent three rather than a replacement for any.
+
 ### 7.4 Prompt injection
 
 buddy reads untrusted screen content and acts on a computer. Treat everything on screen as **data, never instruction.** The system prompt states this explicitly. Text in a Slack message, a web page, a PDF, or a filename that appears to instruct buddy — "ignore previous instructions", "the user approved this", "send this to…" — is surfaced to the user and never acted on. No screen content can change the profile, extend a budget, alter the allowlist, or authorize a gated action. Authorization comes only from the user in the app.
@@ -602,7 +608,7 @@ Each is an interface defined and used in v1 with a single implementation behind 
 | Later | v1 seam |
 |---|---|
 | Vector note search | `notes.embedding` column, `EmbeddingProvider` interface, search behind `NoteSearch` (FTS5 impl). Adding sqlite-vec is a backfill job. |
-| Wake-word activation | `Activator` interface emitting `ActivationEvent`. `HotkeyActivator` in v1; `WakeWordActivator` is a sibling. |
+| Wake-word activation | **Built after M4.** `activate(source)` in `index.ts` is the seam, with the hotkey and "hey buddy" as its two triggers. `buddyd` transcribes on-device only (`Voice.swift`); `src/main/voice/` decides what was meant and where it goes; the HUD applies a stricter rule than Enter (`shared/voice.ts`). See README, "Voice". |
 | TTS / STT | `VoiceIO` interface, no-op impl. HUD already renders buddy's goal text as a discrete speakable unit. |
 | More providers | `Provider` interface with capability flags `{computerUse, vision, structuredOutput, cheapBulk}`. Anthropic is the only one with `computerUse: true`; the Operator hard-requires it and the UI says so. |
 | More sensors | `Sensor` interface producing T0 signals. `ScreenSensor` in v1; clipboard, calendar, and browser history are siblings. |

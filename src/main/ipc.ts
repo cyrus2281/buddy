@@ -20,6 +20,7 @@ import { operatorAvailability, providerStatuses } from './providers.js';
 import type { NotesEngine } from './notes/engine.js';
 import type { Activation } from './agent/activation.js';
 import type { StandbyManager } from './agent/standby.js';
+import type { VoiceListener } from './voice/listener.js';
 import type { CaptureScheduler } from './capture/scheduler.js';
 import {
   type Allowlist,
@@ -62,6 +63,7 @@ interface Ctx {
   engine: NotesEngine;
   activation: Activation;
   standby: StandbyManager;
+  voice: VoiceListener;
   getState: () => AppState;
   setState: (s: AppState) => void;
 }
@@ -125,6 +127,7 @@ export function registerIpc(ctx: Ctx) {
     wakeups: ctx.standby.pending(),
     providers: providerStatuses(),
     operator: operatorAvailability(),
+    voice: ctx.voice.current(),
   });
 
   ipcMain.handle(CH.getSnapshot, snapshot);
@@ -347,6 +350,19 @@ export function registerIpc(ctx: Ctx) {
     providers: providerStatuses(),
     operator: operatorAvailability(),
   }));
+
+  // ── Voice ───────────────────────────────────────────────────────────────
+
+  ipcMain.handle(CH.getVoiceStatus, () => ctx.voice.current());
+  ipcMain.handle(CH.requestVoicePermission, (_e, kind: 'microphone' | 'speech') => ctx.voice.request(kind));
+  ipcMain.handle(CH.openVoicePermissionSettings, (_e, kind: 'microphone' | 'speech') =>
+    shell.openExternal(
+      kind === 'microphone'
+        ? 'x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone'
+        : 'x-apple.systempreferences:com.apple.preference.security?Privacy_SpeechRecognition',
+    ),
+  );
+  ctx.voice.on('status', (v) => broadcast(CH.onVoice, v));
 
   ctx.standby.on('change', (w) => broadcast(CH.onWakeups, w));
   ctx.standby.on('checked', () => broadcast(CH.onWakeups, ctx.standby.pending()));

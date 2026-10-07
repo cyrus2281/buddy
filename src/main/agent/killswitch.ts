@@ -14,7 +14,10 @@ import type { KillSwitch } from '../../shared/types.js';
 /// be stopped one way and there is nothing to keep in sync.
 ///
 /// Naming them honestly: `hotkey` and `stop-button` are pushes from the UI
-/// layer, and `sentinel` is polled every turn.
+/// layer, and `sentinel` is polled every turn. `voice` — "buddy, stop" — is a
+/// push too, from the wake-phrase listener, and only when buddy is named (see
+/// `voice/route.ts`). It is the one that depends on buddyd, so it is a
+/// convenience beside the other three rather than one of the independent set.
 ///
 /// **Touching the keyboard is deliberately NOT one of them.** buddy runs by
 /// driving the mouse and keyboard, and a person who reaches for either while it
@@ -146,4 +149,5 @@ export const KILL_SWITCH_LABEL: Record<KillSwitch, string> = {
   hotkey: 'the abort hotkey',
   sentinel: '~/.buddy/ABORT',
   'stop-button': 'the Stop button',
+  voice: 'saying “buddy, stop”',
 };

@@ -29,6 +29,8 @@ import type {
   TaskScope,
   TaskStatus,
   TimelineDay,
+  VoiceCommand,
+  VoiceStatus,
   WakeupView,
 } from './types.js';
 
@@ -101,6 +103,11 @@ export const CH = {
   askAboutMyDay: 'buddy:askAboutMyDay',
   getProviders: 'buddy:getProviders',
 
+  // Voice — "hey buddy"
+  getVoiceStatus: 'buddy:getVoiceStatus',
+  requestVoicePermission: 'buddy:requestVoicePermission',
+  openVoicePermissionSettings: 'buddy:openVoicePermissionSettings',
+
   // main → renderer (send)
   onStats: 'buddy:stats',
   onFrame: 'buddy:frame',
@@ -120,6 +127,8 @@ export const CH = {
   onSpend: 'buddy:spend',
   onNotesChanged: 'buddy:notesChanged',
   onWakeups: 'buddy:wakeups',
+  onVoice: 'buddy:voice',
+  onVoiceCommand: 'buddy:voiceCommand',
   hudShown: 'hud:shown',
   hudHidden: 'hud:hidden',
 } as const;
@@ -181,6 +190,9 @@ export interface Snapshot {
    *  in the snapshot so the UI never has to guess at capability. */
   providers: ProviderStatus[];
   operator: OperatorAvailability;
+  /** Whether buddy is listening for "hey buddy", and if it should be and is
+   *  not, why. */
+  voice: VoiceStatus;
 }
 
 export interface BuddyApi {
@@ -255,6 +267,10 @@ export interface BuddyApi {
   /** PRD §8.2 / §9: FTS5 over the notes, plus the notes, into context. */
   askAboutMyDay(question: string): Promise<DayAnswer>;
   getProviders(): Promise<{ providers: ProviderStatus[]; operator: OperatorAvailability }>;
+  getVoiceStatus(): Promise<VoiceStatus>;
+  /** Raises the system prompt where macOS still allows one, then re-checks. */
+  requestVoicePermission(kind: 'microphone' | 'speech'): Promise<VoiceStatus>;
+  openVoicePermissionSettings(kind: 'microphone' | 'speech'): Promise<void>;
   /** The HUD measures its own content and asks for the height; a fixed window
    *  would either clip the live feed or float a pill in a 420px void. */
   hudResize(height: number): Promise<void>;
@@ -280,6 +296,10 @@ export interface BuddyApi {
   onSpend(fn: (s: SpendReport) => void): () => void;
   onNotesChanged(fn: () => void): () => void;
   onWakeups(fn: (w: WakeupView[]) => void): () => void;
+  onVoice(fn: (v: VoiceStatus) => void): () => void;
+  /** A go-ahead or a dismissal heard while the HUD was up. The HUD decides
+   *  what it means (see `shared/voice.ts`). */
+  onVoiceCommand(fn: (c: VoiceCommand) => void): () => void;
   onHudShown(fn: () => void): () => void;
   onHudHidden(fn: () => void): () => void;
 }

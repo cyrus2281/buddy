@@ -179,6 +179,14 @@ export interface Settings {
    *  means the first-party id in `ANTHROPIC_DEFAULT_MODELS`, so a stored value
    *  from before this existed still resolves to what it used to run. */
   anthropicModels: Partial<Record<AnthropicRole, string>>;
+
+  // Voice — "hey buddy" (PRD §9's wake-word seam).
+  /** Listen for the wake phrase. Off by default: an open microphone is a
+   *  bigger ask than an open screen recorder, and it is the user's to make. */
+  voiceEnabled: boolean;
+  /** What counts as "go ahead" once the HUD is showing a suggestion. Stored as
+   *  typed and normalised when matched, so "Let's go!" still reads as written. */
+  voiceConfirmPhrases: string[];
 }
 
 /** The six things buddy asks Claude to do, each on its own model.
@@ -275,6 +283,21 @@ export const DEFAULT_SETTINGS: Settings = {
   localModel: 'llama3.2-vision',
   anthropicBaseUrl: '',
   anthropicModels: {},
+  voiceEnabled: false,
+  voiceConfirmPhrases: [
+    'take over',
+    'take it over',
+    'go ahead',
+    'start',
+    'start it',
+    'do it',
+    'go for it',
+    'run it',
+    "let's go",
+    'proceed',
+    'finish it',
+    'take it away',
+  ],
   exclusions: [
     { label: '1Password', bundleId: 'com.1password.1password', builtin: true, enabled: true },
     { label: '1Password 7', bundleId: 'com.agilebits.onepassword7', builtin: true, enabled: true },
@@ -473,8 +496,9 @@ export interface StartRunRequest {
 }
 
 /** PRD §7.3. Touching the keyboard is deliberately not one of these: stopping
- *  a run is always an explicit act. See `killswitch.ts`. */
-export type KillSwitch = 'hotkey' | 'sentinel' | 'stop-button';
+ *  a run is always an explicit act. See `killswitch.ts`. `voice` is "buddy,
+ *  stop" — addressed by name, for the same reason. */
+export type KillSwitch = 'hotkey' | 'sentinel' | 'stop-button' | 'voice';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // M3 — the Observer's memory (PRD §4, §5)
@@ -724,4 +748,48 @@ export interface DayAnswer {
   ms: number;
   provider: ProviderId;
   model: string;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Voice — "hey buddy"
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** A TCC answer, as buddyd reports it. `undetermined` is the only state buddy
+ *  may still ask about; the other two are changed in System Settings or not at
+ *  all. */
+export type VoicePermission = 'granted' | 'denied' | 'restricted' | 'undetermined' | 'unknown';
+
+export interface VoiceStatus {
+  /** The setting. */
+  enabled: boolean;
+  /** buddyd has the microphone open and the recognizer running. */
+  listening: boolean;
+  microphone: VoicePermission;
+  speech: VoicePermission;
+  /** The on-device English model is installed. Voice never falls back to
+   *  Apple's servers, so without it voice does not run. */
+  onDevice: boolean;
+  /** Which microphone, while listening. Not always the system default: a
+   *  Bluetooth headset is passed over for the built-in mic. */
+  inputDevice: string | null;
+  /** Enabled but not listening, on purpose: observation is paused, or the
+   *  screen is locked or asleep. A reason, not a problem. */
+  resting: 'paused' | 'locked' | null;
+  /** Enabled, not resting, and still not listening — said in words the user
+   *  can act on. */
+  problem: string | null;
+}
+
+/** What a heard utterance asks for, once the wake phrase and the fillers are
+ *  taken off it. `addressed` is whether it named buddy — "buddy, stop" rather
+ *  than a bare "stop" said to someone else in the room. */
+export type VoiceIntent = { kind: 'confirm' } | { kind: 'cancel'; addressed: boolean };
+
+/** Main → HUD, once `voice/route.ts` has decided a command applies. The HUD
+ *  owns the goal, the profile and the allowlist, so it is the one place a run
+ *  can be started from — and the one place that knows whether a goal is being
+ *  typed that a dismissal would throw away. */
+export interface VoiceCommand {
+  kind: 'confirm' | 'dismiss';
+  t: number;
 }

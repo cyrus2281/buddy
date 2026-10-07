@@ -16,8 +16,10 @@ import { NotesEngine } from './notes/engine.js';
 import { Activation } from './agent/activation.js';
 import { StandbyManager } from './agent/standby.js';
 import { notify } from './notify.js';
+import { VoiceListener } from './voice/listener.js';
+import { routeIntent } from './voice/route.js';
 import { CH } from '../shared/ipc.js';
-import type { AppState } from '../shared/types.js';
+import type { AppState, VoiceIntent } from '../shared/types.js';
 
 /// Orchestrator: the single source of truth for buddy's state (PRD §3.2).
 /// M1 occupies IDLE → OBSERVING → ARMED and PAUSED; the ACTING half arrives in
@@ -28,6 +30,10 @@ let scheduler: CaptureScheduler;
 let engine: NotesEngine;
 let activation: Activation;
 let standby: StandbyManager;
+let voice: VoiceListener;
+/** When the HUD was last armed, by either trigger. A spoken go-ahead is only
+ *  honoured for a while after it (see `voice/route.ts`). */
+let armedAt = 0;
 let tray: Tray | null = null;
 /** The last T0 signal, so the provisional goal has a window title to fall back
  *  on without waiting for a sidecar round trip on the hotkey path. */
@@ -72,6 +78,14 @@ function updateTray() {
       { type: 'separator' },
       { label: 'Open buddy', click: () => createHome() },
       { label: 'Show HUD', accelerator: settings.get().hotkey, click: () => toggleHud() },
+      // The microphone is a bigger thing to leave on than the screen recorder,
+      // so turning it off is one click from anywhere, like Pause.
+      {
+        label: voice?.current().listening ? 'Listening for “Hey buddy”' : 'Listen for “Hey buddy”',
+        type: 'checkbox',
+        checked: settings.get().voiceEnabled,
+        click: () => void settings.update({ voiceEnabled: !settings.get().voiceEnabled }),
+      },
       // §7.3 kill switch 4: always present, always enabled during ACTING, and
       // reachable when every window is closed.
       ...(operator.isRunning()
@@ -191,7 +205,11 @@ async function main() {
   scheduler.on('signal', (sig) => {
     lastFront = { bundleId: sig.bundleId, windowTitle: sig.windowTitle };
   });
-  registerIpc({ scheduler, engine, activation, standby, getState: () => state, setState });
+  voice = new VoiceListener({ settings: () => settings.get(), transport: sidecar });
+  voice.on('status', () => updateTray());
+  voice.on('wake', () => activate('voice'));
+  voice.on('intent', (i: VoiceIntent) => onVoiceIntent(i));
+  registerIpc({ scheduler, engine, activation, standby, voice, getState: () => state, setState });
   createTray();
   createHud(); // built now so the hotkey is instant later
   // buddy's own clicks steal focus from the HUD constantly; blur must not
@@ -215,6 +233,9 @@ async function main() {
     log.error('app', 'sidecar unavailable at launch', { error: (e as Error).message });
   }
   sidecar.on('status', (st) => broadcast(CH.onSidecar, st));
+  // After the sidecar, because buddyd holds the microphone. A later restart of
+  // buddyd re-arms it on its own (`ready`).
+  void voice.reconcile();
   sidecar.on('gave-up', () => {
     setState('NEEDS_HUMAN');
     log.error('app', 'observation halted: buddyd will not stay up');
@@ -263,12 +284,20 @@ async function main() {
   powerMonitor.on('suspend', () => {
     log.info('app', 'system suspended; ending the session');
     engine.onSystemSleep();
+    voice.setAsleep(true);
   });
   powerMonitor.on('lock-screen', () => {
     log.info('app', 'screen locked; ending the session');
     engine.onSystemSleep();
+    // Nobody at a locked Mac is talking to it, and buddy cannot act across
+    // the lock screen anyway (§1, non-goals).
+    voice.setLocked(true);
   });
-  powerMonitor.on('resume', () => log.info('app', 'system resumed'));
+  powerMonitor.on('unlock-screen', () => voice.setLocked(false));
+  powerMonitor.on('resume', () => {
+    log.info('app', 'system resumed');
+    voice.setAsleep(false);
+  });
   // The tray menu is rebuilt on every state change, which is what keeps the
   // Stop item present for exactly as long as there is something to stop.
   operator.on('update', (v) => {
@@ -293,6 +322,9 @@ async function main() {
     scheduler.updateSettings(next);
     engine.updateSettings(next);
     standby.updateSettings(next);
+    // Covers the voice toggle, the phrase list, and Pause — a paused buddy is
+    // not listening either.
+    void voice.reconcile();
     bindHotkeys();
     broadcast(CH.onSettings, next);
     updateTray();
@@ -325,32 +357,71 @@ async function main() {
   log.info('app', 'ready', { state, framesDir: paths.frames() });
 }
 
+/// PRD §9's `Activator` seam: the hotkey and "hey buddy" are one activation
+/// with two triggers. They differ in one way. The hotkey toggles; a voice never
+/// closes the HUD, because "hey buddy" said twice is someone repeating
+/// themselves, not changing their mind — and re-showing a HUD that is already
+/// up would throw away whatever they had typed into it.
+function activate(source: 'hotkey' | 'voice') {
+  // During a run either trigger re-expands the HUD rather than dismissing it:
+  // hiding the thing with the Stop button on it is the wrong instinct.
+  if (operator.isRunning()) {
+    showHudNow();
+    return;
+  }
+  if (isHudVisible()) {
+    if (source === 'voice') {
+      armedAt = Date.now();
+      return;
+    }
+    activation.cancel('dismissed');
+    hideHud();
+    setState(scheduler.isRunning() ? 'OBSERVING' : 'IDLE');
+    return;
+  }
+  // §6.1 step 2: the provisional goal is computed *before* the window is
+  // shown, so the HUD's first paint already has it. It is one indexed SQLite
+  // read; the model call it kicks off lands seconds later.
+  activation.begin();
+  showHudNow();
+  setState('ARMED');
+  armedAt = Date.now();
+}
+
+function onVoiceIntent(intent: VoiceIntent) {
+  const { action, why } = routeIntent(intent, {
+    running: operator.isRunning(),
+    hudVisible: isHudVisible(),
+    state,
+    armedAt,
+    now: Date.now(),
+  });
+  log.info('voice', action === 'ignore' ? 'command ignored' : 'command', { kind: intent.kind, action, why });
+  switch (action) {
+    case 'stop-run':
+      operator.stop('voice');
+      // Shown rather than hidden, as with the abort hotkey: the user needs to
+      // see that it stopped and what it had done.
+      showHudNow();
+      return;
+    case 'dismiss':
+    case 'confirm':
+      // The HUD owns the goal, the profile and the allowlist, so starting the
+      // run is its call; and only it knows whether someone is mid-way through
+      // typing a goal a stray "never mind" should not throw away. This only
+      // tells it what was heard.
+      broadcast(CH.onVoiceCommand, { kind: action, t: Date.now() });
+      return;
+  }
+}
+
 function bindHotkeys() {
   const s = settings.get();
   const results = hotkeys.register([
     {
       label: 'Activate buddy',
       accelerator: s.hotkey,
-      handler: () => {
-        // During a run the hotkey re-expands the HUD rather than dismissing it:
-        // hiding the thing with the Stop button on it is the wrong instinct.
-        if (operator.isRunning()) {
-          showHudNow();
-          return;
-        }
-        if (isHudVisible()) {
-          activation.cancel('dismissed');
-          hideHud();
-          setState(scheduler.isRunning() ? 'OBSERVING' : 'IDLE');
-        } else {
-          // §6.1 step 2: the provisional goal is computed *before* the window is
-          // shown, so the HUD's first paint already has it. It is one indexed
-          // SQLite read; the model call it kicks off lands seconds later.
-          activation.begin();
-          showHudNow();
-          setState('ARMED');
-        }
-      },
+      handler: () => activate('hotkey'),
     },
     {
       // §7.3 kill switch 1. Registered since M1 so the binding could never be

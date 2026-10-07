@@ -18,6 +18,7 @@ export default defineConfig({
           'm2-checks': path.resolve('src/main/m2-checks.ts'),
           'm3-checks': path.resolve('src/main/m3-checks.ts'),
           'm4-checks': path.resolve('src/main/m4-checks.ts'),
+          'voice-checks': path.resolve('src/main/voice-checks.ts'),
           // The one thing in the repo that talks to the live API (PRD §10, M4).
           'live-run': path.resolve('src/main/live-run.ts'),
           'live-standby': path.resolve('src/main/live-standby.ts'),

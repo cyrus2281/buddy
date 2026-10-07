@@ -16,6 +16,7 @@ import type {
   Settings,
   SidecarStatus,
   SpendReport,
+  VoiceStatus,
   WakeupView,
 } from '../shared/types.js';
 
@@ -55,6 +56,7 @@ export function useBuddy() {
    *  unlinked by the hourly sweep must not keep showing thumbnails of files
    *  that are gone. */
   const [purgeVersion, setPurgeVersion] = useState(0);
+  const [voice, setVoice] = useState<VoiceStatus | null>(null);
 
   useEffect(() => {
     let alive = true;
@@ -76,6 +78,7 @@ export function useBuddy() {
       setWakeups(s.wakeups);
       setProviders(s.providers);
       setOperator(s.operator);
+      setVoice(s.voice);
       setGate(s.activeRun?.gate ?? null);
       setFrames(await api.getRecentFrames(60));
       setLogs(await api.getLogs(200));
@@ -114,6 +117,7 @@ export function useBuddy() {
       api.onSpend(setSpend),
       api.onNotesChanged(() => setNotesVersion((v) => v + 1)),
       api.onWakeups(setWakeups),
+      api.onVoice(setVoice),
       // A key added or removed changes what the Operator and the providers can
       // do, and `setSecret` broadcasts settings — so the capability matrix is
       // re-read rather than left showing what was true at mount.
@@ -159,6 +163,7 @@ export function useBuddy() {
     providers,
     operator,
     purgeVersion,
+    voice,
     update,
     keepRate,
   };

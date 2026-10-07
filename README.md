@@ -71,6 +71,51 @@ controls, and scrolling to watch it is not a request to stop. Stopping is always
 something you say on purpose. It does note in the run log that you touched the
 machine, which is often the explanation for a click that landed somewhere odd.
 
+## Voice — "hey buddy"
+
+**Off by default.** Turn it on in Settings › Voice, or with **Listen for "Hey
+buddy"** in the menu bar. macOS asks for the Microphone and for Speech
+Recognition, once each.
+
+- **"Hey buddy"** opens the HUD, exactly as ⌥⌘Space does. It has to *start* what
+  you say and be followed by nothing or by a command: it is also what people say
+  to dogs, children and friends, and "hey buddy, how's it going?" is not
+  addressed to a Mac. So buddy waits for the pause at the end (about a second)
+  before it wakes.
+- **"Take over"**, **"go ahead"**, **"start"** — and "do it", "run it", "let's
+  go", a few more, editable in Settings — run buddy's suggestion, like Enter.
+  Only as a whole utterance ("we should go ahead with it" is not one), and only
+  for 30 seconds after the HUD opens; after that say "hey buddy" again, or
+  "hey buddy, go ahead" in one breath. A go-ahead heard before the reading lands
+  is held until it does, so the ~200 ms provisional guess is never what voice
+  runs. Voice will not start a run when buddy is unsure (below 0.5 it is asking
+  you a question, and "go ahead" is not an answer), when it could not read the
+  screen, or under leashless — and it never answers a confirm gate. In each case
+  the HUD says what would work instead.
+- **"Never mind"** or **"cancel"** closes the HUD. During a run, **"buddy,
+  stop"** stops it. A bare "stop" does not, for the reason §7.3 gives for
+  stopping always being something you say on purpose: "stop" in a room is often
+  meant for someone else. It is a convenience beside the three kill switches,
+  not one of them — it depends on `buddyd` and a working microphone.
+
+**What it hears stays here.** Recognition is Apple's on-device model or nothing:
+if the Mac has no on-device English model, voice does not run, rather than
+stream the room to a server. Audio is never saved. `buddyd` sends only finished
+utterances, which are matched in memory and dropped; the log records *that* a
+command was heard, never what was said. Pause and the lock screen both close the
+microphone, and macOS's orange dot is in the menu bar whenever it is open. If
+your input is AirPods or another Bluetooth headset, buddy listens on the
+built-in mic instead — opening a headset's mic drops it to call quality, which
+for an always-on listener would be always.
+
+Each wake costs what the hotkey does — one goal-inference reading — so a false
+"hey buddy" from a podcast costs one reading and an Esc.
+
+`buddyd` carries its own usage strings in an embedded `Info.plist`
+(`sidecar/Info.plist`). Without them macOS does not refuse a permission request
+from a bare executable; it kills it, and the supervisor would restart it into a
+crash loop.
+
 ## Commands
 
 | | |
@@ -82,6 +127,7 @@ machine, which is often the explanation for a click that landed somewhere odd.
 | `npm run check:m2` | The M2 exit-criteria checks (66 of them) |
 | `npm run check:m3` | The M3 exit-criteria checks (66 of them) |
 | `npm run check:m4` | The M4 exit-criteria checks (41 of them) |
+| `npm run check:voice` | The "hey buddy" checks (21 of them) — matcher, routing, the listener, and the real `buddyd` |
 | `npm run live:run` | One real two-app run against a live Opus 5 (needs `ANTHROPIC_API_KEY`) |
 | `npm run live:standby` | Story B end to end against live Opus 5 + Haiku 4.5 |
 | `npm run typecheck` | Both tsconfigs |

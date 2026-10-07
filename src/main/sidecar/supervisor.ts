@@ -11,8 +11,24 @@ import type {
   FrontmostSnapshot,
   Permissions,
   SidecarStatus,
+  VoicePermission,
 } from '../../shared/types.js';
 import type { TargetInfo } from '../agent/guardrails.js';
+
+/** `voice_status` as buddyd sends it. */
+export interface RawVoiceStatus {
+  listening: boolean;
+  microphone: VoicePermission;
+  speech: VoicePermission;
+  onDevice: boolean;
+  inputDevice: string | null;
+  error: string | null;
+  usageStrings: boolean;
+}
+
+export type VoiceEvent =
+  | { type: 'utterance'; id: number; text: string }
+  | { type: 'state'; listening: boolean; error: string | null };
 
 /// Spawns and supervises `buddyd`. Restarts it on crash with backoff, gives up
 /// after a burst of immediate failures rather than spinning, and surfaces the
@@ -89,6 +105,12 @@ export class Sidecar extends EventEmitter {
     this.rpc.onNotification('human_input', (p) => {
       for (const fn of this.humanInputHandlers) fn(p);
     });
+    this.rpc.onNotification('voice_utterance', (p) => {
+      for (const fn of this.voiceHandlers) fn({ type: 'utterance', id: p.id, text: String(p.text ?? '') });
+    });
+    this.rpc.onNotification('voice_state', (p) => {
+      for (const fn of this.voiceHandlers) fn({ type: 'state', listening: !!p.listening, error: p.error ?? null });
+    });
 
     this.rpc.onNotification('ready', (p) => {
       this.version = p?.version ?? null;
@@ -96,6 +118,9 @@ export class Sidecar extends EventEmitter {
       log.info('sidecar', 'ready', { version: this.version, pid: this.proc?.pid });
       this.markReady?.();
       this.emit('status', this.status());
+      // A fresh buddyd holds nothing: anything that kept state in the old one
+      // (the voice listener's open microphone) re-arms on this.
+      this.emit('ready');
     });
 
     this.proc.on('error', (e) => {
@@ -256,6 +281,29 @@ export class Sidecar extends EventEmitter {
     return () => this.humanInputHandlers.delete(fn);
   }
   private humanInputHandlers = new Set<(p: { kind: string; t: number }) => void>();
+
+  isRunning(): boolean {
+    return !!this.rpc;
+  }
+
+  // --- Voice. buddyd transcribes; deciding what was meant is voice/listener.ts. ---
+
+  /** Reads authorization and never asks for it. */
+  voiceStatus = () => this.require().call<RawVoiceStatus>('voice_status', {}, 5_000);
+  voiceDevices = () => this.require().call<Record<string, unknown>>('voice_devices', {}, 5_000);
+  voiceStart = (hints: string[]) => this.require().call<RawVoiceStatus>('voice_start', { hints }, 10_000);
+  voiceStop = () => this.require().call<RawVoiceStatus>('voice_stop', {}, 5_000);
+  /** Raises the system prompt and answers when the user does — which can be a
+   *  while, hence the long timeout. */
+  requestVoicePermission = (kind: 'microphone' | 'speech') =>
+    this.require().call<{ granted: boolean; status: RawVoiceStatus }>('voice_request_permission', { kind }, 120_000);
+
+  /** Survives a sidecar restart, like `onHumanInput`. */
+  onVoice(fn: (e: VoiceEvent) => void) {
+    this.voiceHandlers.add(fn);
+    return () => this.voiceHandlers.delete(fn);
+  }
+  private voiceHandlers = new Set<(e: VoiceEvent) => void>();
   capture = (params: {
     path: string;
     target?: 'display' | 'window' | 'region';

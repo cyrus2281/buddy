@@ -15,6 +15,8 @@ import type {
   SidecarStatus,
   SpendReport,
   SpendTier,
+  VoicePermission,
+  VoiceStatus,
 } from '../../shared/types.js';
 
 /// Settings (PRD §8.6): keys, capture, retention, hotkeys, exclusions, live
@@ -34,6 +36,7 @@ export function SettingsView({
   notesStats,
   providers,
   operator,
+  voice,
   update,
 }: {
   settings: Settings | null;
@@ -43,6 +46,7 @@ export function SettingsView({
   notesStats: NotesStats | null;
   providers: ProviderStatus[];
   operator: OperatorAvailability | null;
+  voice: VoiceStatus | null;
   update: (patch: Partial<Settings>) => Promise<void>;
 }) {
   const [secrets, setSecrets] = useState<SecretsStatus | null>(null);
@@ -566,6 +570,13 @@ export function SettingsView({
       </Section>
 
       <Section
+        title="Voice"
+        hint="Say “hey buddy” and the HUD opens, as it does for the hotkey. While it is showing a suggestion, “take over”, “go ahead” or “start” runs it, and “never mind” closes it. During a run, “buddy, stop” stops it."
+      >
+        <VoicePanel voice={voice} settings={settings} update={update} />
+      </Section>
+
+      <Section
         title="Exclusions"
         hint="Apps and window titles that are never captured. A frame is also skipped whenever a password field has focus, whichever app it is in."
       >
@@ -583,6 +594,120 @@ export function SettingsView({
         </Card>
       </Section>
     </div>
+  );
+}
+
+/// Voice (the wake-word seam, PRD §9).
+///
+/// The status line is the part that matters. Voice fails quietly by nature —
+/// nothing happens when you speak — so every reason it is not listening has a
+/// sentence here: off, resting (paused or locked, on purpose), or a problem
+/// with what to do about it.
+function VoicePanel({
+  voice,
+  settings,
+  update,
+}: {
+  voice: VoiceStatus | null;
+  settings: Settings;
+  update: (patch: Partial<Settings>) => Promise<void>;
+}) {
+  const [busy, setBusy] = useState<string | null>(null);
+  const on = settings.voiceEnabled;
+
+  const status: { ok: boolean; warn: boolean; text: string } = !on
+    ? { ok: false, warn: true, text: 'Off. The microphone is closed.' }
+    : voice?.listening
+      ? { ok: true, warn: false, text: `Listening on ${voice.inputDevice ?? 'the default microphone'}.` }
+      : voice?.resting === 'paused'
+        ? { ok: false, warn: true, text: 'Resting: observation is paused, and a paused buddy is not listening either.' }
+        : voice?.resting === 'locked'
+          ? { ok: false, warn: true, text: 'Resting while the screen is locked.' }
+          : voice?.problem
+            ? { ok: false, warn: false, text: voice.problem }
+            : { ok: false, warn: true, text: 'Starting…' };
+
+  const grant = async (kind: 'microphone' | 'speech') => {
+    setBusy(kind);
+    try {
+      await api.requestVoicePermission(kind);
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const rows: { kind: 'microphone' | 'speech'; title: string; value: VoicePermission }[] = [
+    { kind: 'microphone', title: 'Microphone', value: voice?.microphone ?? 'unknown' },
+    { kind: 'speech', title: 'Speech Recognition', value: voice?.speech ?? 'unknown' },
+  ];
+
+  return (
+    <Card className="flex flex-col gap-4 p-4">
+      <div className="flex items-start justify-between gap-4">
+        <div className="min-w-0">
+          <p className="text-[12px] text-fog-100">Listen for “Hey buddy”</p>
+          <p className="mt-1.5 flex items-start gap-2 text-[11px] leading-relaxed text-fog-500">
+            <span className="mt-[5px]">
+              <StatusDot ok={status.ok} warn={status.warn} />
+            </span>
+            <span className={!status.ok && !status.warn ? 'text-rust-400' : ''}>{status.text}</span>
+          </p>
+        </div>
+        <Toggle checked={on} label="Listen for Hey buddy" onChange={(v) => void update({ voiceEnabled: v })} />
+      </div>
+
+      <div className="flex flex-col gap-2 border-t border-ink-800 pt-3">
+        {rows.map((r) => (
+          <div key={r.kind} className="flex items-center justify-between gap-4">
+            <span className="flex items-center gap-2 text-[12px] text-fog-100">
+              <StatusDot ok={r.value === 'granted'} warn={r.value === 'undetermined' || r.value === 'unknown'} />
+              {r.title}
+              <span
+                className={`font-mono text-[10px] uppercase tracking-wider ${
+                  r.value === 'granted' ? 'text-moss-400' : 'text-fog-500'
+                }`}
+              >
+                {r.value === 'undetermined' ? 'not asked yet' : r.value}
+              </span>
+            </span>
+            <span className="flex gap-1.5">
+              {r.value === 'undetermined' && (
+                <Button variant="accent" disabled={busy === r.kind} onClick={() => void grant(r.kind)}>
+                  {busy === r.kind ? 'Asking…' : 'Grant'}
+                </Button>
+              )}
+              <Button variant="ghost" onClick={() => void api.openVoicePermissionSettings(r.kind)}>
+                Open Settings
+              </Button>
+            </span>
+          </div>
+        ))}
+      </div>
+
+      <p className="text-[11px] leading-relaxed text-fog-500">
+        Speech is recognised on this Mac by Apple’s on-device model. If the Mac does not have
+        one, voice does not run, rather than send the room to a server. Audio is never saved, and
+        what buddy hears is matched and dropped: the log records that a command was heard, never
+        what was said. macOS shows its orange microphone dot in the menu bar the whole time voice is
+        on. With AirPods or another Bluetooth headset as your input, buddy listens on the built-in
+        microphone instead, so the headset is not dropped to call quality.
+      </p>
+      <p className="text-[11px] leading-relaxed text-fog-500">
+        A go-ahead counts only as a whole utterance on its own — “we should go ahead with it” is
+        not one — and only for 30 seconds after the HUD opens; after that, say “hey buddy” again,
+        or “hey buddy, go ahead” in one breath. buddy waits for its reading before it starts, and
+        will not start by voice when it is unsure, when it could not read the screen, or under
+        leashless. A bare “stop” does not stop a run — say “buddy, stop”.
+      </p>
+
+      <ListField
+        label="Go-ahead phrases"
+        hint="One per line. Matched against the whole utterance, ignoring “okay”, “please” and “buddy”. “Stop”, “cancel” and “never mind” are fixed and always win. An empty list turns voice go-aheads off and leaves “hey buddy” working."
+        value={settings.voiceConfirmPhrases}
+        placeholder={'take over\ngo ahead\nstart'}
+        onChange={(v) => void update({ voiceConfirmPhrases: v })}
+      />
+    </Card>
   );
 }
 

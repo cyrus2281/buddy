@@ -19,6 +19,7 @@
     "eval:record": "electron-vite build && electron out/main/record.js",
     "eval:goal:shots": "tsx evals/goal-inference/run.ts --fixture .shot",
     "check:m4": "electron-vite build && electron out/main/m4-checks.js",
+    "check:voice": "electron-vite build && electron out/main/voice-checks.js",
     "live:run": "electron-vite build && electron out/main/live-run.js",
     "live:standby": "electron-vite build && electron out/main/live-standby.js"
   },
@@ -82,6 +83,8 @@
       "extendInfo": {
         "NSScreenCaptureUsageDescription": "buddy captures your screen to build a memory of what you are working on. Screenshots stay on this machine and are deleted after the retention window.",
         "NSAppleEventsUsageDescription": "buddy controls other apps to finish the work you were doing.",
+        "NSMicrophoneUsageDescription": "buddy listens for \"hey buddy\" when you turn voice on. Speech is recognised on this Mac; audio is never saved or sent anywhere.",
+        "NSSpeechRecognitionUsageDescription": "buddy recognises \"hey buddy\" and a few short commands on this Mac. Recognition runs on-device only; audio is never saved or sent anywhere.",
         "LSUIElement": 1
       }
     },
