@@ -44,6 +44,9 @@ export interface SavedContext {
   runId: number;
   goal: string;
   profile: RunProfile;
+  /** Hands-off is part of how the run was asked to work, so a resume keeps it.
+   *  Absent in a context saved before hands-off existed, which means false. */
+  handsOff?: boolean;
   allowlist: Allowlist;
   budgets: RunBudgets;
   messages: Anthropic.Messages.MessageParam[];

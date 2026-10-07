@@ -1,9 +1,11 @@
+import type Database from 'better-sqlite3';
+
 /// The full v1 schema from PRD §4, created at M1 even though M1 only writes
 /// `frames` and `settings`. Creating it now means M3's notes engine is a set of
 /// queries rather than a migration, and the shape is reviewable while it is
 /// still cheap to change.
 
-export const SCHEMA_VERSION = 2;
+export const SCHEMA_VERSION = 3;
 
 export const SCHEMA = `
 CREATE TABLE IF NOT EXISTS frames (
@@ -106,7 +108,9 @@ CREATE TABLE IF NOT EXISTS runs (
   status       TEXT    NOT NULL,
   steps        INTEGER NOT NULL DEFAULT 0,
   cost_usd     REAL    NOT NULL DEFAULT 0,
-  outcome_json TEXT
+  outcome_json TEXT,
+  -- Hands-off: worked through the accessibility tree, beside the person.
+  hands_off    INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS run_steps (
@@ -240,9 +244,19 @@ END;
 /** Steps from one `user_version` to the next, for databases created before it.
  *  `SCHEMA` is all `IF NOT EXISTS`, so new tables appear on their own; what a
  *  migration is for is the work that has to happen to *existing rows*. */
-export const MIGRATIONS: Record<number, string> = {
+export const MIGRATIONS: Record<number, string | ((db: Database.Database) => void)> = {
   // v1 → v2 is additive: every M5 table is new, and the memory index fills
   // itself from the existing notes and observations on the first launch
   // (memory/index.ts), because what it needs is an embedding, not SQL.
   2: '',
+  // v2 → v3: hands-off runs. A column on an existing table is the one change
+  // `CREATE TABLE IF NOT EXISTS` cannot make on its own — and SQLite has no
+  // `ADD COLUMN IF NOT EXISTS`, so it asks first. A database whose `runs`
+  // table was created from this file already has the column.
+  3: (db) => {
+    const cols = db.prepare('PRAGMA table_info(runs)').all() as { name: string }[];
+    if (!cols.some((c) => c.name === 'hands_off')) {
+      db.exec('ALTER TABLE runs ADD COLUMN hands_off INTEGER NOT NULL DEFAULT 0');
+    }
+  },
 };

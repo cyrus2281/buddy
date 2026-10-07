@@ -64,6 +64,8 @@ export function Hud() {
    *  inferred one, for the rest of this activation. */
   const [typed, setTyped] = useState<string | null>(null);
   const [profile, setProfile] = useState<RunProfile | null>(null);
+  /** Null until toggled, meaning "whatever Settings says the default is". */
+  const [handsOffChoice, setHandsOff] = useState<boolean | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [collapsed, setCollapsed] = useState(false);
   /** A spoken go-ahead not yet acted on — held while the reading is in flight. */
@@ -96,6 +98,7 @@ export function Hud() {
   const allowlistSeeded = !!reading?.target_apps.length;
 
   const effectiveProfile: RunProfile = profile ?? reading?.proposed_profile ?? 'attended';
+  const handsOff = handsOffChoice ?? settings?.handsOffDefault ?? false;
 
   /** What the run is actually started with. Empty under leashless, because the
    *  profile has no allowlist — sending one would put a list in the run log and
@@ -123,6 +126,7 @@ export function Hud() {
         setPhase('armed');
         setTyped(null);
         setProfile(null);
+        setHandsOff(null);
         setError(null);
         setHeardGo(false);
         setVoiceNote(null);
@@ -139,6 +143,7 @@ export function Hud() {
     setVisible(false);
     setTyped(null);
     setProfile(null);
+    setHandsOff(null);
     setPhase('armed');
     setError(null);
     setHeardGo(false);
@@ -157,13 +162,14 @@ export function Hud() {
           profile: withProfile,
           allowlist,
           budgets: snapshot?.defaultBudgets,
+          handsOff,
         });
       } catch (e) {
         setError((e as Error).message.replace(/^Error invoking remote method '[^']+': (Error: )?/, ''));
         setPhase('armed');
       }
     },
-    [allowlist, snapshot],
+    [allowlist, snapshot, handsOff],
   );
 
   useEffect(
@@ -281,14 +287,22 @@ export function Hud() {
 
   // §8.1: collapse to a pill three seconds in, so the HUD stops covering the
   // work it is doing. Hover or the hotkey brings it back.
+  //
+  // Hands-off goes further and gets out of the way entirely: the person is
+  // working in another app, and buddy's work is not happening on screen
+  // anyway. A gate or the run's end brings the HUD back, without focus.
   useEffect(() => {
     if (phase !== 'acting' || gate) {
       setCollapsed(false);
       return;
     }
+    if (run?.handsOff && running) {
+      const t = setTimeout(() => void api.hideHud(), 1800);
+      return () => clearTimeout(t);
+    }
     const t = setTimeout(() => setCollapsed(true), 3000);
     return () => clearTimeout(t);
-  }, [phase, gate]);
+  }, [phase, gate, run?.handsOff, running]);
 
   // The window is sized to its content, so a pill is actually a pill.
   useLayoutEffect(() => {
@@ -355,6 +369,8 @@ export function Hud() {
                       allowlist={allowlist}
                       allowlistSeeded={allowlistSeeded}
                       profiles={profiles}
+                      handsOff={handsOff}
+                      setHandsOff={setHandsOff}
                       budgets={snapshot?.defaultBudgets}
                       abortHotkey={hotkeyIssues.find((h) => h.label === 'Abort run')?.accelerator ?? null}
                       error={error}
@@ -455,6 +471,8 @@ function Armed({
   allowlist,
   allowlistSeeded,
   profiles,
+  handsOff,
+  setHandsOff,
   budgets,
   abortHotkey,
   error,
@@ -477,6 +495,8 @@ function Armed({
   allowlistSeeded: boolean;
   /** `leashless` appears only when it has been turned on in Settings (§7.1). */
   profiles: RunProfile[];
+  handsOff: boolean;
+  setHandsOff: (v: boolean) => void;
   budgets?: { maxSteps: number; maxWallClockMs: number; maxCostUsd: number };
   abortHotkey: string | null;
   error: string | null;
@@ -555,6 +575,36 @@ function Armed({
           </button>
         ))}
       </div>
+
+      {/* Orthogonal to the profile: what is allowed does not change, only how
+          buddy reaches the app. Hence a switch beside the three cards rather
+          than a fourth card. */}
+      <button
+        onClick={() => setHandsOff(!handsOff)}
+        role="switch"
+        aria-checked={handsOff}
+        className={`flex items-start gap-3 rounded-xl border px-3 py-2.5 text-left transition-colors ${
+          handsOff ? 'border-moss-400/50 bg-moss-400/5' : 'border-ink-700 bg-ink-850/50 hover:border-ink-600'
+        }`}
+      >
+        <span
+          className={`mt-0.5 flex h-4 w-7 shrink-0 items-center rounded-full p-0.5 transition-colors ${
+            handsOff ? 'bg-moss-400' : 'bg-ink-600'
+          }`}
+        >
+          <span
+            className={`h-3 w-3 rounded-full bg-ink-950 transition-transform ${handsOff ? 'translate-x-3' : ''}`}
+          />
+        </span>
+        <span className="flex flex-col">
+          <span className="text-[12px] font-medium text-fog-100">Hands-off</span>
+          <span className="text-[11px] leading-snug text-fog-500">
+            {handsOff
+              ? 'buddy works in the background through each app’s accessibility tree. Your pointer, keyboard and front app stay yours — keep working.'
+              : 'buddy drives the pointer and keyboard. Turn this on to keep working while it runs.'}
+          </span>
+        </span>
+      </button>
 
       {reading && <RiskFlags flags={reading.risk_flags} />}
 
@@ -745,7 +795,8 @@ function Acting({ run }: { run: RunView | null }) {
         <span
           className={`font-mono text-[10px] ${run.profile === 'leashless' ? 'text-rust-400' : 'text-fog-500'}`}
         >
-          {run.profile} · cache read {run.cacheReadTokens.toLocaleString()} tok
+          {run.profile}
+          {run.handsOff ? ' · hands-off' : ''} · cache read {run.cacheReadTokens.toLocaleString()} tok
         </span>
         <button
           onClick={() => void api.stopRun()}

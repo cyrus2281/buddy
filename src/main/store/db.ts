@@ -51,8 +51,9 @@ function migrate(handle: Database.Database, file: string) {
   }
   for (let v = current + 1; v <= SCHEMA_VERSION; v++) {
     handle.transaction(() => {
-      const sql = MIGRATIONS[v];
-      if (sql) handle.exec(sql);
+      const step = MIGRATIONS[v];
+      if (typeof step === 'function') step(handle);
+      else if (step) handle.exec(step);
       handle.pragma(`user_version = ${v}`);
     })();
     log.info('store', 'schema migrated', { from: v - 1, to: v });

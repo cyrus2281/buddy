@@ -31,6 +31,11 @@ searchable by meaning, on this Mac, through a 30 MB embedding model and a
 sqlite-vec index inside buddy's own database — and all of it is on the **You**
 tab, where every belief can be confirmed, rejected, edited or forgotten.
 
+**And it can work beside you.** A hands-off run never touches the pointer or
+the keyboard you are using. buddy presses buttons, fills fields and opens apps
+through each app's accessibility tree, in windows that stay behind yours — so
+you keep typing in your editor while it replies in Slack.
+
 The typed goal is still there. It is now the override, not the entry point.
 
 ## Requirements
@@ -133,6 +138,89 @@ Each wake costs what the hotkey does — one goal-inference reading — so a fal
 from a bare executable; it kills it, and the supervisor would restart it into a
 crash loop.
 
+## Hands-off — keep working while buddy works
+
+**Off by default.** Flip the **Hands-off** switch in the HUD for one run, or make
+it the default in Settings › Hands-off. It is separate from the profile: what
+buddy may do is decided exactly as before; hands-off changes only *how* it
+reaches the app.
+
+A normal run shares your machine: the Operator moves the real pointer, types
+into whatever has focus, and photographs the whole display, so you hand it the
+keyboard and wait. A hands-off run is given **none of those tools** — not the
+computer toolset with its members refused, but a different surface:
+
+| Tool | What it does |
+|---|---|
+| `look` | One app's window — a picture of *just that window*, taken by window id so it is right even when the window is behind yours — and its accessibility tree, every element carrying an id like `e42`. No coordinates: there is nothing to aim. |
+| `act` | `press`, `focus`, `select`, `show_menu`, `confirm`, `cancel`, `increment`, `decrement`, `scroll_to_visible`, `raise` — on an element, by id, through accessibility. |
+| `set_value` | Replace a field's text in one step, then read it back and say whether the app kept it. |
+| `send_keys` | A shortcut or text posted to *one process* (`CGEventPostToPid`), not to whatever has focus. |
+| `open` | Launch an app, or open a URL or file in it, without bringing it forward. |
+
+The run opens on a list of what is running — not on a screenshot of your
+display, which would mostly be a picture of the one app buddy must not touch —
+and the HUD gets out of the way after a moment. A confirm gate, or the run's
+end, brings it back **without taking keyboard focus**: you are typing in
+another app, and a gate that grabbed focus would put a stray Esc (deny) under
+your fingers mid-sentence.
+
+### The parts worth knowing about
+
+**The guardrail is told the app buddy is acting in, not the app in front.** In
+a normal run those are the same app. In hands-off the frontmost app is yours,
+and checking Slack's Send button against your editor's allowlist entry would be
+the classifier answering the wrong question. So hands-off actions are classified
+against the *named* element, read from its own app's tree (`ax_target`): its
+pid, its title, its window, the browser URL if it is one. The same classifier,
+the same policy table, the same enforcement point — a press on **Send** is a
+`send` (confirm when attended, refused when unattended), a value set into an
+`AXSecureTextField` is a credential *whichever field has focus*, a value that
+looks like an API key or a card number is refused like typing it would be,
+Return sent to a chat app in the background is a send, and `open` is checked
+against the app and domain allowlists.
+
+**Element ids are never reused.** Every `look` numbers its elements afresh,
+and the last four readings stay resolvable. Resetting to `e1` each time would
+make a batch like "press e12, look, press e14" press whatever the *second*
+reading called 14 — a different element, picked by an id the model read off the
+first. An id from an older reading, or one whose element has gone, comes back
+as a sentence the model can act on: *look at the window again*.
+
+**What the OS does not guarantee is measured instead.** An app is free to
+activate itself in response to a press (a link that opens the browser, say).
+Every `act` records the frontmost app before and after; if it changed, buddy
+hands focus back to your app and says so in the result. `set_value` reads the
+field back, because "AX accepted the value" and "the page kept it" are
+different things.
+
+**Your keyboard and mouse are expected, so they are not narrated.** A normal
+run writes "you used the keyboard while buddy was working" into the log. In
+hands-off that is the whole point of the mode, so input is counted and nothing
+is written.
+
+**Hands-off survives standby.** It is saved with the transcript and a resumed
+run comes back hands-off — and comes back without photographing the display,
+for the same reason the first attempt did not.
+
+### What is real, and what is not
+
+`npm run check:hands` drives a **real press, a real value and a real window
+capture through the real buddyd**, against a small window the suite opens
+itself, behind whatever you have in front — and reads the results back from
+that page. Measured: the press arrives with the frontmost app unchanged and the
+pointer nowhere near the button; the value arrives *and fires the page's
+`input` event*, which is what a React field needs to notice it; the window is
+photographed at its own 420×240 rather than at the display's size.
+
+One limit, measured rather than assumed: **Chromium ignores keystrokes posted
+to a background window's process.** `send_keys` reaches native apps; in a
+browser or most Electron apps, use `set_value` for text and `act` for buttons
+— the tool's description tells the model exactly that. And how much any app
+exposes through accessibility is the app's decision: a canvas, a game or a
+thin Electron UI gives hands-off little to act on, which is why it is a switch
+per run rather than the only way buddy works.
+
 ## Commands
 
 | | |
@@ -146,6 +234,7 @@ crash loop.
 | `npm run check:m4` | The M4 exit-criteria checks (50 of them) |
 | `npm run check:voice` | The "hey buddy" checks (21 of them) — matcher, routing, the listener, and the real `buddyd` |
 | `npm run check:memory` | The M5 checks (39 of them) — the real embedder, the real sqlite-vec index, retrieval quality on a benchmark, learning through a scripted rollup |
+| `npm run check:hands` | The hands-off checks (26 of them) — the tool surface, the guardrails against the named app, the loop, and a real press, value and window capture through the real `buddyd` |
 | `npm run live:run` | One real two-app run against a live Opus 5 (needs `ANTHROPIC_API_KEY`) |
 | `npm run live:standby` | Story B end to end against live Opus 5 + Haiku 4.5 |
 | `npm run live:learn` | Story C: two days of learning, a correction, Ask and goal inference against live Sonnet 5 + Opus 5, in a throwaway database (~$0.20) |

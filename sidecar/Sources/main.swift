@@ -43,6 +43,7 @@ func handle(_ req: RPCRequest) {
             if let pid = req.params["pid"]?.intValue, pid > 0 { opts.pid = pid_t(pid) }
             if let d = req.params["depth"]?.intValue { opts.depth = d }
             if let n = req.params["maxNodes"]?.intValue { opts.maxNodes = n }
+            opts.register = req.params["register"]?.boolValue ?? false
             Out.result(id: req.id, try AXTree.tree(opts))
         } catch let e as RPCError { Out.error(id: req.id, e) }
         catch { Out.error(id: req.id, .internalError(String(describing: error))) }
@@ -63,6 +64,43 @@ func handle(_ req: RPCRequest) {
         do { Out.result(id: req.id, try TargetInfo.snapshot(req.params)) }
         catch let e as RPCError { Out.error(id: req.id, e) }
         catch { Out.error(id: req.id, .internalError(String(describing: error))) }
+
+    // ── Hands-off: acting on an app through its accessibility tree, without
+    //    the pointer or the keyboard focus the person is using (Hands.swift).
+
+    case "app_windows":
+        do { Out.result(id: req.id, try Hands.windows(req.params)) }
+        catch let e as RPCError { Out.error(id: req.id, e) }
+        catch { Out.error(id: req.id, .internalError(String(describing: error))) }
+
+    case "ax_look":
+        do { Out.result(id: req.id, try Hands.look(req.params)) }
+        catch let e as RPCError { Out.error(id: req.id, e) }
+        catch { Out.error(id: req.id, .internalError(String(describing: error))) }
+
+    case "ax_act":
+        do { Out.result(id: req.id, try Hands.act(req.params)) }
+        catch let e as RPCError { Out.error(id: req.id, e) }
+        catch { Out.error(id: req.id, .internalError(String(describing: error))) }
+
+    case "ax_target":
+        do { Out.result(id: req.id, try Hands.target(req.params)) }
+        catch let e as RPCError { Out.error(id: req.id, e) }
+        catch { Out.error(id: req.id, .internalError(String(describing: error))) }
+
+    case "keys_to_app":
+        do { Out.result(id: req.id, try Hands.keys(req.params)) }
+        catch let e as RPCError { Out.error(id: req.id, e) }
+        catch { Out.error(id: req.id, .internalError(String(describing: error))) }
+
+    case "open_app":
+        let id = req.id
+        Hands.open(req.params) { r in
+            switch r {
+            case .success(let v): Out.result(id: id, v)
+            case .failure(let e): Out.error(id: id, e)
+            }
+        }
 
     case "watch_input":
         // §7.3 kill switch 3. Buddy's own events carry Input.magic and are

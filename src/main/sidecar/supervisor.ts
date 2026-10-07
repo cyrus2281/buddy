@@ -26,6 +26,59 @@ export interface RawVoiceStatus {
   usageStrings: boolean;
 }
 
+/** One app and its windows, as `app_windows` reports them. */
+export interface AppWindows {
+  pid: number;
+  bundleId: string;
+  appName: string;
+  active: boolean;
+  hidden: boolean;
+  bundlePath: string;
+  windows: {
+    title: string;
+    minimized: boolean;
+    fullscreen: boolean;
+    main: boolean;
+    focused: boolean;
+    subrole: string;
+    frame?: { x: number; y: number; w: number; h: number };
+    windowId?: number;
+    /** `AXDocument`: the file the window is showing, as a file URL. */
+    document?: string;
+  }[];
+}
+
+export interface AxLook {
+  pid: number;
+  bundleId: string;
+  appName: string;
+  /** Whether the app is in front. Hands-off works either way; this is so the
+   *  tool result can say which. */
+  active: boolean;
+  windowTitle: string;
+  minimized: boolean;
+  truncated: boolean;
+  windowId?: number;
+  frame?: { x: number; y: number; w: number; h: number };
+  tree: unknown;
+}
+
+export interface AxActResult {
+  ok: boolean;
+  ref: number;
+  action: string;
+  role: string;
+  title: string;
+  /** `set_value` only: what the field reads now, and whether it is what was set. */
+  value?: string;
+  verified?: boolean;
+  /** The app took the foreground in response, and whether buddy gave it back. */
+  stoleFocus: boolean;
+  tookFocusTo: string;
+  restoredFocus: boolean;
+  pointerMoved: boolean;
+}
+
 export type VoiceEvent =
   | { type: 'utterance'; id: number; text: string }
   | { type: 'state'; listening: boolean; error: string | null };
@@ -258,7 +311,7 @@ export class Sidecar extends EventEmitter {
   focusedElement = () =>
     this.require().call<{ focused: unknown; isSecureTextField: boolean }>('focused_element', {}, 5_000);
   displays = () => this.require().call<{ displays: DisplayInfo[] }>('displays', {}, 10_000);
-  axTree = (params: { pid?: number; depth?: number; maxNodes?: number } = {}) =>
+  axTree = (params: { pid?: number; depth?: number; maxNodes?: number; register?: boolean } = {}) =>
     this.require().call('ax_tree', params, 10_000);
   input = (action: Record<string, unknown>) => this.require().call('input', action, 45_000);
 
@@ -267,6 +320,35 @@ export class Sidecar extends EventEmitter {
    *  the pointer, in one round trip (PRD §7.2). */
   targetInfo = (point?: { x: number; y: number }) =>
     this.require().call<TargetInfo>('target_info', point ? { x: point.x, y: point.y } : {}, 8_000);
+
+  // --- Hands-off (Hands.swift): acting on an app through its accessibility
+  //     tree, without the pointer or the keyboard focus the person is using. ---
+
+  /** Every regular app and its windows, or one app's. */
+  appWindows = (params: { bundleId?: string; pid?: number } = {}) =>
+    this.require().call<{ apps: AppWindows[] }>('app_windows', params, 10_000);
+  /** One app's window as a tree with element ids, plus the window id to
+   *  photograph it by. Works on a window that is not in front. */
+  axLook = (params: { bundleId?: string; pid?: number; windowTitle?: string; maxNodes?: number }) =>
+    this.require().call<AxLook>('ax_look', params, 10_000);
+  /** Press, focus, select, set a value… on element `ref`, and report whether
+   *  the app took focus doing it. */
+  axAct = (params: { ref: number; action: string; value?: string; restoreFocus?: boolean }) =>
+    this.require().call<AxActResult>('ax_act', params, 15_000);
+  /** `target_info` for an element or a named app rather than a screen point —
+   *  what the guardrail classifies a hands-off action against. */
+  axTarget = (params: { ref?: number; bundleId?: string; pid?: number }) =>
+    this.require().call<TargetInfo>('ax_target', params, 8_000);
+  /** Keystrokes posted to one process, not to whatever has focus. */
+  keysToApp = (params: { bundleId?: string; pid?: number; key?: string; text?: string }) =>
+    this.require().call<{ ok: boolean; stoleFocus: boolean; characters?: number; key?: string }>(
+      'keys_to_app',
+      params,
+      45_000,
+    );
+  /** Launch an app, or open a URL or file in one, without bringing it forward. */
+  openApp = (params: { bundleId: string; url?: string; activate?: boolean }) =>
+    this.require().call<{ ok: boolean; pid: number; appName: string }>('open_app', params, 30_000);
 
   /** §7.3 kill switch 3. buddyd runs a listen-only event tap and filters out
    *  buddy's own events by their `BUDDY_MAGIC` tag, so this only fires on real

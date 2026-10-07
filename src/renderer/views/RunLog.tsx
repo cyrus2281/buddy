@@ -102,7 +102,8 @@ function RunCard({
         <div className="min-w-0 flex-1">
           <div className="truncate text-[13px] text-fog-100">{run.goal}</div>
           <div className="mt-0.5 truncate font-mono text-[10px] text-fog-500">
-            {new Date(run.startedAt).toLocaleString()} · {run.profile} · {run.steps} steps · $
+            {new Date(run.startedAt).toLocaleString()} · {run.profile}
+            {run.handsOff ? ' · hands-off' : ''} · {run.steps} steps · $
             {run.costUsd.toFixed(3)}
             {outcome?.summary ? ` · ${outcome.summary}` : ''}
           </div>

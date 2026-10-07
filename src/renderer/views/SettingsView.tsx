@@ -466,6 +466,35 @@ export function SettingsView({
       </Section>
 
       <Section
+        title="Hands-off"
+        hint="How buddy reaches an app, separate from what it is allowed to do there."
+      >
+        <Card className="p-4">
+          <div className="flex items-start justify-between gap-5">
+            <div className="min-w-0">
+              <p className="text-[12px] font-medium text-fog-100">Start runs hands-off</p>
+              <p className="mt-1 text-[11px] leading-relaxed text-fog-500">
+                buddy presses buttons, fills fields and sends keys through each app’s accessibility
+                tree, in the background — it never moves your pointer, never types into the app
+                you are using, and never brings its app to the front. You keep working while it
+                runs. The same guardrails decide what it may do, checked against the app it is
+                actually acting in.
+              </p>
+              <p className="mt-2 text-[11px] leading-relaxed text-fog-500">
+                Apps with a thin accessibility tree — canvases, games, some Electron apps — give it
+                less to act on; turn it off per run in the HUD for those.
+              </p>
+            </div>
+            <Toggle
+              checked={settings.handsOffDefault}
+              label="Start runs hands-off"
+              onChange={(v) => void update({ handsOffDefault: v })}
+            />
+          </div>
+        </Card>
+      </Section>
+
+      <Section
         title="Runs"
         hint="What a run starts with when goal inference has not seeded it. The allowlist is per run and confirmed in the same keystroke as the goal — this is the fallback, and what a typed goal uses. It does not apply to leashless, which has no allowlist."
       >

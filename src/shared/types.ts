@@ -195,6 +195,12 @@ export interface Settings {
    *  stops building a picture of who it happened to, and stops consulting the
    *  one it has. Nothing learned is deleted by turning it off. */
   learningEnabled: boolean;
+
+  // Hands-off.
+  /** Whether the HUD starts on hands-off. Off by default: it is the newer and
+   *  narrower way to work — an app with a poor accessibility tree is one it
+   *  cannot do much in without the mouse. */
+  handsOffDefault: boolean;
 }
 
 /** The six things buddy asks Claude to do, each on its own model.
@@ -293,6 +299,7 @@ export const DEFAULT_SETTINGS: Settings = {
   anthropicModels: {},
   voiceEnabled: false,
   learningEnabled: true,
+  handsOffDefault: false,
   voiceConfirmPhrases: [
     'take over',
     'take it over',
@@ -448,6 +455,7 @@ export interface RunRow {
   steps: number;
   cost_usd: number;
   outcome_json: string | null;
+  hands_off: number;
 }
 
 /** The pending confirm gate (PRD §8.1). Only ever one at a time: the loop is
@@ -491,6 +499,9 @@ export interface RunView {
    *  in their display form. Shown in the HUD and the run log, because a
    *  confirmation the user stopped seeing should still be visible somewhere. */
   sessionGrants: string[];
+  /** Working through the accessibility tree, beside the person rather than
+   *  instead of them. */
+  handsOff: boolean;
   /** How many times this run has come back from standby (PRD §6.6). Zero on a
    *  first attempt. The budgets restart on each resume, so this is what makes
    *  the run row's cumulative steps and cost explicable. */
@@ -502,6 +513,11 @@ export interface StartRunRequest {
   profile: RunProfile;
   allowlist: Allowlist;
   budgets?: Partial<RunBudgets>;
+  /** Hands-off: buddy works through the target app's accessibility tree and
+   *  never moves the pointer or types into whatever has focus, so the person
+   *  keeps working while it runs. Orthogonal to the profile — what is allowed
+   *  is the same either way; only *how* buddy reaches the app differs. */
+  handsOff?: boolean;
 }
 
 /** PRD §7.3. Touching the keyboard is deliberately not one of these: stopping

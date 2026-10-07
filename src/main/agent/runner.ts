@@ -5,14 +5,16 @@ import { runs } from '../store/runs.js';
 import { BudgetTracker } from './budget.js';
 import { Executor, type ExecOutcome, type Frame } from './executor.js';
 import { KILL_SWITCH_LABEL, killSwitches as globalKillSwitches, type KillSwitches } from './killswitch.js';
-import { buildOpeningMessage, buildSystemPrompt } from './prompt.js';
+import { buildHandsOffOpening, buildOpeningMessage, buildSystemPrompt } from './prompt.js';
 import {
   COMPUTER_TOOLSET_NAME,
   DESCRIBE_TOOL,
   FINISH_TOOL,
   FinishSchema,
+  buildHandsOffTools,
   buildTools,
   isComputerAction,
+  isHandsOffTool,
 } from './tools.js';
 import { type ModelClient } from './client.js';
 import { anthropicModel } from '../notes/model.js';
@@ -119,6 +121,9 @@ export class AgentRunner extends EventEmitter {
   private goal = '';
   private memoryBlock: string | null | undefined;
   private profile: StartRunRequest['profile'] = 'attended';
+  /** Working through accessibility, beside the person. Fixed for the run, like
+   *  the profile — and for the same reason it rides along on a resume. */
+  private handsOff = false;
   private lastHumanInputAt = 0;
   private humanInputCount = 0;
   /** M4 (§6.6). Steps and dollars carried from the attempts before this one, so
@@ -165,6 +170,7 @@ export class AgentRunner extends EventEmitter {
       humanInputs: this.humanInputCount,
       sessionGrants: [...this.grants.values()],
       resumes: this.resumes,
+      handsOff: this.handsOff,
     };
   }
 
@@ -215,14 +221,16 @@ export class AgentRunner extends EventEmitter {
     this.goal = req.goal.trim();
     this.profile = req.profile;
     this.allowlist = req.allowlist;
+    this.handsOff = !!req.handsOff;
     this.budgets = { ...DEFAULT_BUDGETS, ...(req.budgets ?? {}) };
     this.tracker = new BudgetTracker(this.budgets);
     this.startedAt = this.deps.now?.() ?? Date.now();
 
-    this.runId = runs.create(this.goal, this.profile);
+    this.runId = runs.create(this.goal, this.profile, this.handsOff);
     log.info('agent', 'run started', {
       runId: this.runId,
       profile: this.profile,
+      handsOff: this.handsOff,
       apps: this.allowlist.apps.length,
       domains: this.allowlist.domains.length,
     });
@@ -245,33 +253,12 @@ export class AgentRunner extends EventEmitter {
     }
 
     try {
-      // The opening screenshot. The model's coordinate space does not exist
-      // until a frame does, so nothing can be dispatched before this.
-      const first = await this.executor.capture(this.runId, null);
-      this.lastFrame = first;
-
-      this.messages = [
-        {
-          role: 'user',
-          content: [
-            { type: 'text', text: buildOpeningMessage(this.goal) },
-            { type: 'text', text: 'The screen as it is right now:' },
-            { type: 'image', source: { type: 'base64', media_type: 'image/png', data: first.base64 } },
-            { type: 'text', text: await this.treeBlockText() },
-          ],
-        },
-      ];
-      this.recordStep({
-        tool: 'screenshot',
-        input: { action: 'screenshot', reason: 'opening frame' },
-        result: `${first.width}x${first.height} @ scale ${first.scale}`,
-        framePath: first.path,
-        isError: false,
-        verdict: null,
-        scale: first.scale,
-      });
-
-      await this.loop(this.systemFor(first));
+      if (this.handsOff) {
+        await this.openHandsOff();
+        await this.loop(this.systemFor(null));
+      } else {
+        await this.openShared();
+      }
     } catch (e) {
       this.park('needs_human', `The run failed: ${(e as Error).message}`);
       log.error('agent', 'run threw', { runId: this.runId, error: (e as Error).message });
@@ -279,6 +266,62 @@ export class AgentRunner extends EventEmitter {
       await this.settle();
     }
     return this.view();
+  }
+
+  /** A normal run's opening: a screenshot of the display, the tree, and the
+   *  loop. */
+  private async openShared(): Promise<void> {
+    // The opening screenshot. The model's coordinate space does not exist
+    // until a frame does, so nothing can be dispatched before this.
+    const first = await this.executor.capture(this.runId, null);
+    this.lastFrame = first;
+
+    this.messages = [
+      {
+        role: 'user',
+        content: [
+          { type: 'text', text: buildOpeningMessage(this.goal) },
+          { type: 'text', text: 'The screen as it is right now:' },
+          { type: 'image', source: { type: 'base64', media_type: 'image/png', data: first.base64 } },
+          { type: 'text', text: await this.treeBlockText() },
+        ],
+      },
+    ];
+    this.recordStep({
+      tool: 'screenshot',
+      input: { action: 'screenshot', reason: 'opening frame' },
+      result: `${first.width}x${first.height} @ scale ${first.scale}`,
+      framePath: first.path,
+      isError: false,
+      verdict: null,
+      scale: first.scale,
+    });
+
+    await this.loop(this.systemFor(first));
+  }
+
+  /**
+   * A hands-off run's opening: no screenshot of the display — it is the
+   * person's, and a picture of it would mostly show the one app buddy must not
+   * touch — but a list of what is running, so the first `look` is aimed rather
+   * than guessed.
+   */
+  private async openHandsOff(): Promise<void> {
+    const apps = await this.runningAppsText();
+    this.messages = [{ role: 'user', content: [{ type: 'text', text: buildHandsOffOpening(this.goal, apps) }] }];
+    this.note(
+      'hands-off',
+      'Working hands-off: buddy acts through each app’s accessibility tree and never moves your pointer ' +
+        'or types into the app you are using. Keep working.',
+    );
+  }
+
+  private async runningAppsText(): Promise<string> {
+    try {
+      return await this.executor.describeRunningApps();
+    } catch (e) {
+      return `(The list of running apps is unavailable: ${(e as Error).message}. Look at an app by its bundle id.)`;
+    }
   }
 
   /**
@@ -307,6 +350,7 @@ export class AgentRunner extends EventEmitter {
     this.goal = req.goal.trim();
     this.profile = req.profile;
     this.allowlist = req.allowlist;
+    this.handsOff = !!req.handsOff;
     this.budgets = { ...DEFAULT_BUDGETS, ...(req.budgets ?? {}) };
     this.tracker = new BudgetTracker(this.budgets);
     this.startedAt = this.deps.now?.() ?? Date.now();
@@ -335,7 +379,9 @@ export class AgentRunner extends EventEmitter {
     await this.kill.arm();
 
     try {
-      const first = await this.executor.capture(this.runId, null);
+      // Hands-off resumes without photographing the display, for the reason
+      // its opening does; the model looks at the app it needs instead.
+      const first = this.handsOff ? null : await this.executor.capture(this.runId, null);
       this.lastFrame = first;
       this.messages = req.messages.slice();
       this.appendResumeTurn(await this.resumeBlocks(req, first));
@@ -343,10 +389,10 @@ export class AgentRunner extends EventEmitter {
         tool: 'resume',
         input: { condition: req.condition, attempt: req.attempt },
         result: `Resumed after ${req.attempt} check${req.attempt === 1 ? '' : 's'}: ${req.why}`,
-        framePath: first.path,
+        framePath: first?.path ?? null,
         isError: false,
         verdict: null,
-        scale: first.scale,
+        scale: first?.scale ?? null,
       });
 
       await this.loop(this.systemFor(first));
@@ -362,7 +408,7 @@ export class AgentRunner extends EventEmitter {
   /** The system prompt, which depends on the frame because §6.2's scale factor
    *  and the screen size are in it. Built identically for a first run and a
    *  resume so the two cannot drift. */
-  private systemFor(frame: Frame): Anthropic.Messages.TextBlockParam[] {
+  private systemFor(frame: Frame | null): Anthropic.Messages.TextBlockParam[] {
     return [
       {
         type: 'text',
@@ -371,9 +417,10 @@ export class AgentRunner extends EventEmitter {
           profile: this.profile,
           allowlist: this.allowlist,
           budgets: this.budgets,
-          scale: frame.scale,
-          screen: { width: frame.width, height: frame.height },
+          scale: frame?.scale ?? 1,
+          screen: { width: frame?.width ?? 0, height: frame?.height ?? 0 },
           memory: this.memoryFor(),
+          handsOff: this.handsOff,
         }),
         cache_control: { type: 'ephemeral' },
       },
@@ -396,8 +443,24 @@ export class AgentRunner extends EventEmitter {
 
   private async resumeBlocks(
     req: ResumeRunRequest,
-    frame: Frame,
+    frame: Frame | null,
   ): Promise<Anthropic.Messages.ContentBlockParam[]> {
+    if (!frame) {
+      return [
+        {
+          type: 'text',
+          text:
+            `You went to standby waiting for this to become true: "${req.condition}".\n` +
+            `buddy checked ${req.attempt} time${req.attempt === 1 ? '' : 's'} and has now decided it is: ` +
+            `${req.why}\n\n` +
+            'Everything above this message is your own work from before the wait — continue from it ' +
+            'rather than starting again. You are still working hands-off. The apps have moved on and ' +
+            'every element id from before the wait is gone, so look at the app you need before you ' +
+            'act. These are running now:\n\n' +
+            (await this.runningAppsText()),
+        },
+      ];
+    }
     return [
       {
         type: 'text',
@@ -459,6 +522,7 @@ export class AgentRunner extends EventEmitter {
         runId: this.runId,
         goal: this.goal,
         profile: this.profile,
+        handsOff: this.handsOff,
         allowlist: this.allowlist,
         budgets: this.budgets,
         messages: this.messages,
@@ -480,7 +544,7 @@ export class AgentRunner extends EventEmitter {
   }
 
   private async loop(system: Anthropic.Messages.TextBlockParam[]): Promise<void> {
-    const tools = buildTools();
+    const tools = this.handsOff ? buildHandsOffTools() : buildTools();
 
     for (;;) {
       this.turn++;
@@ -638,19 +702,17 @@ export class AgentRunner extends EventEmitter {
       return { kind: 'ok', block: this.toolResult(call, 'OK', false), isError: false };
     }
 
-    if (!isComputerAction(call.name)) {
+    // Each mode answers only its own tools: a hands-off run is never offered
+    // the computer toolset, and a name from the other surface is a model
+    // mistake to report rather than a capability to quietly honour.
+    if (this.handsOff ? !isHandsOffTool(call.name) : !isComputerAction(call.name)) {
       const msg = `Unknown tool: ${call.name}`;
       this.recordStep({ tool: call.name, input: call.input, result: msg, isError: true, verdict: null });
       return { kind: 'ok', block: this.toolResult(call, msg, true), isError: true };
     }
 
-    // ── A computer action ──────────────────────────────────────────────────
-    let result = await this.executor.execute(call.name, call.input, {
-      runId: this.runId,
-      profile: this.profile,
-      allowlist: this.allowlist,
-      lastFrame: this.lastFrame,
-    });
+    // ── A computer action, or a hands-off one ──────────────────────────────
+    const result = await this.execCall(call, false);
 
     if (result.kind === 'gate') {
       // Already granted for this run: re-dispatch without asking again. This is
@@ -752,6 +814,33 @@ export class AgentRunner extends EventEmitter {
       return { kind: 'ok', block: this.toolResult(call, result.text, true), isError: true };
     }
 
+    // Success. A hands-off `look` with a picture: the window and its tree, as a
+    // custom tool's result — no `toolset_name`, which belongs to the computer
+    // toolset's members alone.
+    if (result.frame && !isComputerAction(call.name)) {
+      this.recordStep({
+        tool: call.name,
+        input: call.input,
+        result: `${result.frame.width}x${result.frame.height} window, ${result.text.length} chars of tree`,
+        framePath: result.frame.path,
+        isError: false,
+        verdict: result.verdict,
+        scale: result.frame.scale,
+      });
+      return {
+        kind: 'ok',
+        isError: false,
+        block: {
+          type: 'tool_result',
+          tool_use_id: call.id,
+          content: [
+            { type: 'image', source: { type: 'base64', media_type: 'image/png', data: result.frame.base64 } },
+            { type: 'text', text: result.text.slice(0, MAX_TREE_CHARS) },
+          ],
+        },
+      };
+    }
+
     // Success. A frame means this was a screenshot or a zoom.
     if (result.frame) {
       this.lastFrame = result.frame;
@@ -783,8 +872,15 @@ export class AgentRunner extends EventEmitter {
       };
     }
 
-    this.recordStep({ tool: call.name, input: call.input, result: result.text, isError: false, verdict: result.verdict, scale: this.lastFrame?.scale ?? null });
-    return { kind: 'ok', block: this.toolResult(call, result.text, false), isError: false };
+    // A tree with no picture (a minimised window) is still a long text; the
+    // log keeps a summary of it, the model gets it whole.
+    const logged = call.name === 'look' ? `${result.text.length} chars of tree, no picture` : result.text;
+    this.recordStep({ tool: call.name, input: call.input, result: logged, isError: false, verdict: result.verdict, scale: this.lastFrame?.scale ?? null });
+    return {
+      kind: 'ok',
+      block: this.toolResult(call, call.name === 'look' ? result.text.slice(0, MAX_TREE_CHARS) : result.text, false),
+      isError: false,
+    };
   }
 
   /**
@@ -795,14 +891,22 @@ export class AgentRunner extends EventEmitter {
   private async dispatchApproved(
     call: ToolUse,
   ): Promise<{ kind: 'ok'; block: Anthropic.Messages.ContentBlockParam; isError: boolean } | { kind: 'halted' }> {
-    const result = await this.executor.execute(call.name, call.input, {
+    return this.finishDispatch(call, await this.execCall(call, true));
+  }
+
+  /** The one place a tool call reaches the executor, for both surfaces and
+   *  both the first dispatch and an approved re-dispatch. */
+  private execCall(call: ToolUse, preApproved: boolean): Promise<ExecOutcome> {
+    const ctx = {
       runId: this.runId,
       profile: this.profile,
       allowlist: this.allowlist,
       lastFrame: this.lastFrame,
-      preApproved: true,
-    });
-    return this.finishDispatch(call, result);
+      ...(preApproved ? { preApproved: true } : {}),
+    };
+    return this.handsOff && isHandsOffTool(call.name)
+      ? this.executor.executeHands(call.name, call.input, ctx)
+      : this.executor.execute(call.name, call.input, ctx);
   }
 
   /**
@@ -907,6 +1011,13 @@ export class AgentRunner extends EventEmitter {
    * a reader, and thirty rows of "you pressed a key" would bury the actual run.
    */
   private onHumanInput = (p: { kind: string; t: number }) => {
+    // Hands-off is the mode in which the person *is* supposed to keep using
+    // the machine. Counting it is still honest; narrating it as a takeover
+    // would be the log misdescribing the run.
+    if (this.handsOff) {
+      this.humanInputCount++;
+      return;
+    }
     const now = Date.now();
     if (now - this.lastHumanInputAt < HUMAN_INPUT_COALESCE_MS) {
       this.humanInputCount++;

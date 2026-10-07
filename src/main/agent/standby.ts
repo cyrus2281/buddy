@@ -395,6 +395,7 @@ export class StandbyManager extends EventEmitter {
         runId: row.run_id,
         goal: saved.goal,
         profile: saved.profile,
+        handsOff: !!saved.handsOff,
         allowlist: saved.allowlist,
         budgets: saved.budgets,
         messages: saved.messages,

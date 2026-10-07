@@ -461,6 +461,31 @@ Risk flags needed explicit per-flag definitions. Left loose (*"flag what the tas
 
 ---
 
+### 6.8 Hands-off
+
+The Operator as specified above *shares* the machine: §6.4's events go to the
+HID tap, so a run means handing over the pointer and keyboard. Hands-off is the
+other arrangement, chosen per run and orthogonal to the profile (§7.1): what is
+allowed is unchanged; only the route to the app differs.
+
+| | Shared (§6.3–6.5) | Hands-off |
+|---|---|---|
+| Sees | the display | one app's window, by window id, even when occluded |
+| Targets | pixels, guided by the AX tree | element ids (`e42`) from that app's AX tree |
+| Acts with | `CGEvent` to the HID tap | `AXPress` / `AXValue` / `CGEventPostToPid` / `NSWorkspace` with `activates = false` |
+| Classified against | the frontmost app and the element under the point | the element's own app (`ax_target`) |
+| Person's input | noted in the log as a takeover | expected, counted, not narrated |
+
+The tool surface is replaced, not filtered: a model offered `left_click` reaches
+for it, and a refusal per turn teaches nothing. Opening turn: the running apps
+and their windows instead of a display screenshot. Confirm gates and the run's
+end show the HUD without keyboard focus. `runs.hands_off` (schema v3) records
+it; the saved standby context carries it so a resume keeps it.
+
+Known limit: Chromium does not deliver process-posted key events to a window
+that is not key, so `send_keys` is for native apps; web views take `set_value`
+and `act`.
+
 ## 7. Guardrails
 
 Three profiles ship in v1. They share one enforcement point and differ only in a policy table, so each additional profile is a column rather than a second implementation.
@@ -901,6 +926,20 @@ reciprocal-rank fusion — scored *below* meaning alone and was replaced; the ch
 now fails on that kind of regression. `npm run live:learn` exercises learning
 against live models in a throwaway database; it has not yet been run against the
 API.
+
+### M6 — Hands-off: work beside the person
+
+A second way to reach an app: through its accessibility tree, in the background,
+without the shared pointer, the keyboard focus, or a screenshot of the display
+(§6.8) · `look` / `act` / `set_value` / `send_keys` / `open` in place of the
+computer toolset · the guardrail classifies against the *named* element's app ·
+element ids that are never reused · focus taken by an app handed back · a
+passive HUD for gates · hands-off saved through standby.
+**Exit:** a run can press, fill and open things in a window behind the person's,
+held to the same policy table, while the person keeps working.
+
+**Status: built and verified** — `npm run check:hands`, 26 checks; the last
+five drive the real buddyd against a real window. See README, "Hands-off".
 
 ### Honest read on the timeline
 

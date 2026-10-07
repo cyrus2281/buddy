@@ -141,6 +141,7 @@ function viewOf(runId: number, goal: string, status: RunView['status'], summary 
     id: runId,
     goal,
     profile: 'attended',
+    handsOff: false,
     status,
     startedAt: Date.now() - 60_000,
     endedAt: Date.now(),

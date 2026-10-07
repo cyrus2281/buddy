@@ -240,6 +240,10 @@ const READ_ONLY_ACTIONS = new Set([
   'scroll',
   'wait',
   'describe_focused_window',
+  // Hands-off: reading one app's window, and moving focus or scroll position
+  // inside it. None of them changes anything a person would have to undo.
+  'ax_look',
+  'ax_focus',
 ]);
 
 const CLICK_ACTIONS = new Set([
@@ -251,9 +255,19 @@ const CLICK_ACTIONS = new Set([
   'left_mouse_down',
   'left_mouse_up',
   'left_click_drag',
+  // Hands-off `act` press/select/confirm/…: a click without the pointer. The
+  // element is the one the action names, so the button rule below reads its
+  // title exactly as it reads the element under a click.
+  'ax_press',
 ]);
 
-const KEYBOARD_ACTIONS = new Set(['type', 'key', 'hold_key']);
+/** Hands-off `set_value`: typing, without the keyboard. It carries text, so the
+ *  keystroke-content rules read it the same way they read `type`. */
+const KEYBOARD_ACTIONS = new Set(['type', 'key', 'hold_key', 'ax_set_value']);
+
+/** The actions whose text is checked for keys, cards, seed phrases and
+ *  commands. */
+const TEXT_ACTIONS = new Set(['type', 'ax_set_value']);
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -327,12 +341,18 @@ export function classify(c: ClassifyInput): GuardVerdict {
   // A password field with focus. Typing into one is a credential action no
   // matter what the model believes it is doing, and clicking into one is the
   // step immediately before that — buddy has no business filling either.
-  if (KEYBOARD_ACTIONS.has(action) && (target.focused?.isSecureTextField || target.secureInput)) {
+  // Hands-off sets a value on a named element rather than the focused one, so
+  // for `ax_set_value` the element itself is what has to be checked.
+  const secureTarget =
+    target.focused?.isSecureTextField ||
+    target.secureInput ||
+    (action === 'ax_set_value' && !!el?.isSecureTextField);
+  if (KEYBOARD_ACTIONS.has(action) && secureTarget) {
     return verdict(
       'credentials',
       'ax-tree',
       `A secure text field has focus in ${app}. buddy does not type into password fields.`,
-      target.focused?.title || 'a password field',
+      (action === 'ax_set_value' ? name : '') || target.focused?.title || 'a password field',
     );
   }
   if (CLICK_ACTIONS.has(action) && el?.isSecureTextField) {
@@ -378,7 +398,7 @@ export function classify(c: ClassifyInput): GuardVerdict {
 
   // ── 3. Keystroke content (heuristic, but deny-strength) ───────────────────
 
-  if (action === 'type') {
+  if (TEXT_ACTIONS.has(action)) {
     const text = String(input.text ?? '');
     for (const { re, what } of KEY_SHAPES) {
       if (re.test(text)) {
@@ -458,12 +478,27 @@ export function classify(c: ClassifyInput): GuardVerdict {
     }
   }
 
-  return verdict(
-    baseClass,
-    'action-kind',
-    baseClass === 'read' ? `Reads the screen in ${app}.` : `Types into ${app}.`,
-    name || app,
-  );
+  return verdict(baseClass, 'action-kind', plainReason(action, baseClass, app), name || app);
+}
+
+/** The run log's sentence for an action no rule singled out. The hands-off
+ *  verbs get their own, because "types into Slack" for a button press would
+ *  be the log misdescribing what buddy did. */
+function plainReason(action: string, baseClass: ActionClass, app: string): string {
+  switch (action) {
+    case 'ax_look':
+      return `Looks at ${app}'s window.`;
+    case 'ax_focus':
+      return `Moves focus inside ${app}.`;
+    case 'ax_press':
+      return `Presses a control in ${app}, without the pointer.`;
+    case 'ax_set_value':
+      return `Sets a field's value in ${app}, without the keyboard.`;
+    case 'ax_open':
+      return `Opens ${app} in the background.`;
+    default:
+      return baseClass === 'read' ? `Reads the screen in ${app}.` : `Types into ${app}.`;
+  }
 }
 
 /** Exposed for the checks and the Settings UI: the matrix as data. */

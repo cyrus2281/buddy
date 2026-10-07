@@ -164,6 +164,7 @@ export interface RunSummary {
   steps: number;
   costUsd: number;
   outcome: unknown;
+  handsOff: boolean;
 }
 
 /** What a purge removed. Mirrors the main process's `PurgeReport`, declared

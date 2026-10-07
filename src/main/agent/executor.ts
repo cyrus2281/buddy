@@ -3,6 +3,8 @@ import { sidecar } from '../sidecar/supervisor.js';
 import { log } from '../log.js';
 import { runPaths } from '../store/runs.js';
 import { classify, type TargetInfo } from './guardrails.js';
+import { ACT_VERBS, type HandsOffTool } from './tools.js';
+import type { AxActResult, AxLook } from '../sidecar/supervisor.js';
 import type { Allowlist, GuardVerdict, RunProfile } from '../../shared/types.js';
 
 /// The executor: the one place a `CGEvent` is dispatched, and therefore the one
@@ -36,7 +38,9 @@ export type ExecOutcome =
   // (PRD §8.5), and "why was this allowed" is as much a part of it as "why was
   // this blocked".
   | { kind: 'ok'; text: string; frame?: Frame; verdict: GuardVerdict }
-  | { kind: 'error'; text: string; verdict: GuardVerdict }
+  /** `verdict` is null only when the call was malformed before anything could
+   *  be classified — an element id that is not an id, a verb that is not one. */
+  | { kind: 'error'; text: string; verdict: GuardVerdict | null }
   /** A gated action in `attended`: the loop must ask the user and re-dispatch. */
   | { kind: 'gate'; verdict: GuardVerdict }
   /** A denial. The run parks. buddy does not route around it (PRD §7.1). */
@@ -255,6 +259,201 @@ export class Executor {
     };
   }
 
+  // ── Hands-off ───────────────────────────────────────────────────────────
+
+  /**
+   * A hands-off tool call: classify, then dispatch — the same classifier and
+   * the same enforcement point as `execute`, so a hands-off run is held to
+   * exactly the policy a normal one is. What differs is what the guardrail is
+   * told it is touching: the element or app the call *names*, read from that
+   * app's own accessibility tree, rather than whatever is frontmost or under
+   * the pointer. In hands-off the frontmost app is the person's, and checking
+   * Slack's Send button against their editor's allowlist entry would be the
+   * classifier answering a question nobody asked.
+   */
+  async executeHands(tool: HandsOffTool, input: Record<string, unknown>, ctx: ExecContext): Promise<ExecOutcome> {
+    const fail = (text: string): ExecOutcome => ({ kind: 'error', text, verdict: null });
+    const app = typeof input.app === 'string' ? input.app.trim() : '';
+    let ref: number | null = null;
+    let classAs: string;
+    let classInput: Record<string, unknown> = {};
+    let verb = '';
+
+    switch (tool) {
+      case 'look':
+        if (!app) return fail('Name the app to look at by its bundle id.');
+        classAs = 'ax_look';
+        break;
+      case 'act':
+        ref = parseRef(input.element);
+        verb = String(input.action ?? '');
+        if (ref == null) return fail('Name an element from the last look, like "e42".');
+        if (!(ACT_VERBS as readonly string[]).includes(verb)) {
+          return fail(`"${verb}" is not an action. Use one of: ${ACT_VERBS.join(', ')}.`);
+        }
+        // Moving focus or scrolling changes nothing a person would undo; every
+        // other verb is a click in all but name, and is classified as one.
+        classAs = ['focus', 'scroll_to_visible', 'raise'].includes(verb) ? 'ax_focus' : 'ax_press';
+        break;
+      case 'set_value':
+        ref = parseRef(input.element);
+        if (ref == null) return fail('Name an element from the last look, like "e42".');
+        if (typeof input.text !== 'string') return fail('set_value needs `text`.');
+        classAs = 'ax_set_value';
+        classInput = { text: input.text };
+        break;
+      case 'send_keys': {
+        if (!app) return fail('Name the app to send keys to by its bundle id.');
+        const key = typeof input.key === 'string' && input.key ? input.key : null;
+        const text = typeof input.text === 'string' && input.text ? input.text : null;
+        if ((key == null) === (text == null)) return fail('Give exactly one of `key` or `text`.');
+        // The classifier's own `key` and `type` rules apply unchanged — Return
+        // in a messaging app is a send whichever way the keystroke arrives.
+        classAs = key ? 'key' : 'type';
+        classInput = { text: key ?? text };
+        break;
+      }
+      case 'open':
+        if (!app) return fail('Name the app to open by its bundle id.');
+        classAs = 'ax_open';
+        break;
+    }
+
+    let target: TargetInfo;
+    try {
+      target =
+        tool === 'open'
+          ? this.openTarget(app, typeof input.url === 'string' ? input.url : null)
+          : await sidecar.axTarget(ref != null ? { ref } : { bundleId: app });
+    } catch (e) {
+      // A stale element or an app that is not running: facts the model can
+      // act on (look again, open it), not a guardrail decision.
+      return fail(cleanRpcError((e as Error).message));
+    }
+
+    const verdict = classify({
+      action: classAs,
+      input: classInput,
+      target,
+      allowlist: ctx.allowlist,
+      profile: ctx.profile,
+    });
+    if (verdict.decision === 'deny') {
+      log.warn('executor', 'hands-off action denied', { tool, class: verdict.class, target: verdict.target });
+      return { kind: 'denied', verdict };
+    }
+    if (verdict.decision === 'confirm' && !ctx.preApproved) return { kind: 'gate', verdict };
+
+    try {
+      switch (tool) {
+        case 'look':
+          return await this.look(ctx.runId, app, typeof input.window_title === 'string' ? input.window_title : undefined, verdict);
+        case 'act': {
+          const r = await sidecar.axAct({ ref: ref!, action: verb });
+          return { kind: 'ok', text: describeAct(r, verb), verdict };
+        }
+        case 'set_value': {
+          const r = await sidecar.axAct({ ref: ref!, action: 'set_value', value: String(input.text) });
+          return { kind: 'ok', text: describeAct(r, 'set_value'), verdict };
+        }
+        case 'send_keys': {
+          const key = typeof input.key === 'string' && input.key ? input.key : undefined;
+          const r = await sidecar.keysToApp({ bundleId: app, ...(key ? { key } : { text: String(input.text) }) });
+          return {
+            kind: 'ok',
+            verdict,
+            text:
+              (key ? `OK — pressed ${key} in ${target.appName || app}.` : `OK — typed ${r.characters ?? 0} characters into ${target.appName || app}.`) +
+              (r.stoleFocus ? ' It came to the front in response.' : ''),
+          };
+        }
+        case 'open': {
+          const url = typeof input.url === 'string' && input.url ? input.url : undefined;
+          const r = await sidecar.openApp({ bundleId: app, ...(url ? { url } : {}) });
+          return {
+            kind: 'ok',
+            verdict,
+            text: `OK — opened ${url ? `${url} in ` : ''}${r.appName || app} without bringing it forward. Look at it next.`,
+          };
+        }
+      }
+    } catch (e) {
+      return { kind: 'error', text: cleanRpcError((e as Error).message), verdict };
+    }
+  }
+
+  /** What a hands-off run is told is running, one line per app, so its first
+   *  `look` names a real bundle id. Windows are listed by title because that
+   *  is how a person would say which one. */
+  async describeRunningApps(): Promise<string> {
+    const { apps } = await sidecar.appWindows();
+    return apps
+      .filter((a) => a.bundleId && a.windows.length > 0)
+      .map((a) => {
+        const wins = a.windows
+          .filter((w) => w.title)
+          .slice(0, 6)
+          .map((w) => JSON.stringify(w.title.slice(0, 80)))
+          .join(', ');
+        return `- ${a.bundleId} — ${a.appName}${a.active ? ' (in front: the person’s)' : ''}${wins ? `: ${wins}` : ''}`;
+      })
+      .join('\n');
+  }
+
+  /** What `open` is classified against. The app may not be running yet, so
+   *  this is built from the request rather than read from AX — and only a web
+   *  URL is a URL to the domain allowlist; a file path is not a host. */
+  private openTarget(bundleId: string, url: string | null): TargetInfo {
+    return {
+      bundleId,
+      appName: bundleId,
+      pid: -1,
+      windowTitle: '',
+      secureInput: false,
+      focused: null,
+      url: url && /^https?:\/\//i.test(url) ? url : null,
+      element: null,
+    };
+  }
+
+  /** `look`: the tree with element ids, and a picture of just that window —
+   *  taken by window id, so a window behind others is photographed as itself
+   *  rather than as whatever covers it. */
+  private async look(runId: number, bundleId: string, windowTitle: string | undefined, verdict: GuardVerdict): Promise<ExecOutcome> {
+    const l = await sidecar.axLook({ bundleId, ...(windowTitle ? { windowTitle } : {}), maxNodes: 900 });
+    let frame: Frame | undefined;
+    let note = '';
+    if (l.windowId && !l.minimized) {
+      try {
+        frame = await this.captureWindow(runId, l.windowId);
+      } catch (e) {
+        note = `(No picture: ${cleanRpcError((e as Error).message)} — work from the tree.)`;
+      }
+    } else {
+      note = l.minimized
+        ? '(The window is minimised, so there is no picture — the tree still works.)'
+        : '(No picture of this window is available — the tree still works.)';
+    }
+    return { kind: 'ok', text: renderLook(l, note), frame, verdict };
+  }
+
+  async captureWindow(runId: number, windowId: number): Promise<Frame> {
+    const idx = this.frameSeq++;
+    const path = runPaths.frame(runId, idx);
+    fs.mkdirSync(runPaths.dir(runId), { recursive: true, mode: 0o700 });
+    const shot = await sidecar.capture({ path, target: 'window', windowId });
+    return {
+      path,
+      base64: fs.readFileSync(path).toString('base64'),
+      width: shot.width,
+      height: shot.height,
+      scale: shot.scale,
+      originX: shot.originX ?? 0,
+      originY: shot.originY ?? 0,
+      displayId: shot.displayId,
+    };
+  }
+
   /** What the model sees as the tool result for a non-image action. Short on
    *  purpose: "OK" plus the one fact worth knowing (PRD §6.3). */
   private describe(action: string, result: unknown): string {
@@ -295,25 +494,74 @@ export class Executor {
  * estimating a pixel from a screenshot. Empty structural nodes are collapsed so
  * the useful lines are not buried under fifty `AXGroup`s.
  */
-function renderTree(node: unknown, depth: number): string {
+function renderTree(node: unknown, depth: number, opts: { ids?: boolean; frames?: boolean } = {}): string {
   if (!node || typeof node !== 'object' || depth > 14) return '';
   const n = node as Record<string, unknown>;
+  const withFrames = opts.frames !== false;
+  const id = opts.ids && typeof n.id === 'number' ? `e${n.id} ` : '';
   const role = String(n.role ?? '');
   const subrole = n.subrole ? `/${n.subrole}` : '';
   const name = [n.title, n.description].filter((s) => typeof s === 'string' && s).join(' · ');
   const value = typeof n.value === 'string' && n.value ? ` = ${JSON.stringify(n.value.slice(0, 120))}` : '';
   const f = n.frame as { x: number; y: number; w: number; h: number } | undefined;
-  const at = f ? ` @${Math.round(f.x + f.w / 2)},${Math.round(f.y + f.h / 2)} [${Math.round(f.w)}x${Math.round(f.h)}]` : '';
+  const at =
+    f && withFrames ? ` @${Math.round(f.x + f.w / 2)},${Math.round(f.y + f.h / 2)} [${Math.round(f.w)}x${Math.round(f.h)}]` : '';
   const disabled = n.enabled === false ? ' (disabled)' : '';
 
   const kids = Array.isArray(n.children) ? n.children : [];
-  const rendered = kids.map((k) => renderTree(k, depth + 1)).filter(Boolean);
+  const rendered = kids.map((k) => renderTree(k, depth + 1, opts)).filter(Boolean);
 
   // A nameless container with one child adds a level of indentation and no
   // information. Hoist through it.
   const isNoise = !name && !value && ['AXGroup', 'AXSplitGroup', 'AXScrollArea', 'AXUnknown'].includes(role);
   if (isNoise && rendered.length <= 1) return rendered.join('\n');
 
-  const self = `${'  '.repeat(depth)}${role}${subrole}${name ? ` "${name}"` : ''}${value}${at}${disabled}`;
+  const self = `${'  '.repeat(depth)}${id}${role}${subrole}${name ? ` "${name}"` : ''}${value}${at}${disabled}`;
   return [self, ...rendered].join('\n');
+}
+
+/** A hands-off reading as the model sees it: which app, whether it is in
+ *  front, which window, then the tree with ids and without coordinates —
+ *  there is no pointer to aim, so pixel centres would be tokens spent on
+ *  nothing. */
+export function renderLook(l: AxLook, note = ''): string {
+  return [
+    `app: ${l.appName} (${l.bundleId}) — ${l.active ? 'in front' : 'in the background; it stays there'}`,
+    `window: ${JSON.stringify(l.windowTitle)}${l.minimized ? ' (minimised)' : ''}`,
+    ...(l.truncated ? ['(tree truncated at the node budget)'] : []),
+    ...(note ? [note] : []),
+    '',
+    renderTree(l.tree, 0, { ids: true, frames: false }),
+  ].join('\n');
+}
+
+/** `e42`, `42`, or 42 → 42. Anything else is not an element id. */
+export function parseRef(raw: unknown): number | null {
+  if (typeof raw === 'number' && Number.isInteger(raw) && raw > 0) return raw;
+  if (typeof raw !== 'string') return null;
+  const m = /^\s*e?(\d+)\s*$/i.exec(raw);
+  // Ids start at 1; e0 was never issued.
+  return m && Number(m[1]) > 0 ? Number(m[1]) : null;
+}
+
+/** buddyd errors arrive as "code: sentence (code -32603)"; the model needs
+ *  the sentence. */
+function cleanRpcError(msg: string): string {
+  return msg.replace(/\s*\(code -?\d+\)\s*$/, '').replace(/^[a-z_]+:\s*/, '');
+}
+
+function describeAct(r: AxActResult, verb: string): string {
+  const what = `${r.role || 'element'}${r.title ? ` "${r.title}"` : ''} (e${r.ref})`;
+  let text =
+    verb === 'set_value'
+      ? r.verified
+        ? `OK — ${what} now reads what you set.`
+        : `The app accepted the value but ${what} now reads ${JSON.stringify((r.value ?? '').slice(0, 120))} — it did not keep it. Focus the field and use send_keys instead.`
+      : `OK — ${verb.replace(/_/g, ' ')} on ${what}.`;
+  if (r.stoleFocus) {
+    text += r.restoredFocus
+      ? ` ${r.tookFocusTo || 'The app'} came to the front in response; buddy handed focus back.`
+      : ` ${r.tookFocusTo || 'The app'} came to the front in response.`;
+  }
+  return text;
 }

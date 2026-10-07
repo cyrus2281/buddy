@@ -188,6 +188,7 @@ export class Operator extends EventEmitter {
       steps: r.steps,
       costUsd: r.cost_usd,
       outcome: r.outcome_json ? safeParse(r.outcome_json) : null,
+      handsOff: !!r.hands_off,
     }));
   }
 

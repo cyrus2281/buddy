@@ -198,9 +198,27 @@ enum Input {
         event.setIntegerValueField(.eventSourceUserData, value: magic)
     }
 
+    /// Where synthesized events go. Nil is the HID tap — the shared keyboard,
+    /// delivered to whatever has focus. A pid is one process, for hands-off
+    /// (`Hands.keys`), set only for the duration of `toProcess`.
+    private static var targetPid: pid_t? = nil
+
     private static func post(_ event: CGEvent) {
         tag(event)
-        event.post(tap: .cghidEventTap)
+        if let pid = targetPid {
+            event.postToPid(pid)
+        } else {
+            event.post(tap: .cghidEventTap)
+        }
+    }
+
+    /// Run `body` with every event it posts delivered to `pid` instead of the
+    /// session. Requests are handled one at a time on the main queue, so the
+    /// redirect cannot leak into an unrelated call.
+    static func toProcess(_ pid: pid_t, _ body: () throws -> [String: Any]) throws -> [String: Any] {
+        targetPid = pid
+        defer { targetPid = nil }
+        return try body()
     }
 
     // MARK: - Parameters

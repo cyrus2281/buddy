@@ -63,13 +63,13 @@ export interface WakeupRow {
 }
 
 export const runs = {
-  create(goal: string, profile: RunProfile): number {
+  create(goal: string, profile: RunProfile, handsOff = false): number {
     const info = getDb()
       .prepare(
-        `INSERT INTO runs (started_at, profile, goal, status, steps, cost_usd)
-         VALUES (?, ?, ?, 'running', 0, 0)`,
+        `INSERT INTO runs (started_at, profile, goal, status, steps, cost_usd, hands_off)
+         VALUES (?, ?, ?, 'running', 0, 0, ?)`,
       )
-      .run(Date.now(), profile, goal);
+      .run(Date.now(), profile, goal, handsOff ? 1 : 0);
     const id = Number(info.lastInsertRowid);
     fs.mkdirSync(runPaths.dir(id), { recursive: true, mode: 0o700 });
     return id;

@@ -63,7 +63,14 @@ enum TargetInfo {
         var ref: AXUIElement?
         guard AXUIElementCopyElementAtPosition(system, Float(p.x), Float(p.y), &ref) == .success,
               let el = ref else { return nil }
+        return nameable(el)
+    }
 
+    /// An element described for the guardrail, with its name borrowed from the
+    /// enclosing button when it has none of its own. Shared by the point hit
+    /// test above and by hands-off's element references, so `/^(send|post|…)/i`
+    /// sees "Send" whichever way buddy reached the button.
+    static func nameable(_ el: AXUIElement) -> [String: Any] {
         var node = describe(el)
         // A button's title often lives on the element, but AppKit and web
         // toolbars alike hand back the inner text or image and hang the title on
@@ -82,7 +89,7 @@ enum TargetInfo {
         return node
     }
 
-    private static func describe(_ el: AXUIElement) -> [String: Any] {
+    static func describe(_ el: AXUIElement) -> [String: Any] {
         let role = string(el, kAXRoleAttribute) ?? ""
         let subrole = string(el, kAXSubroleAttribute) ?? ""
         var node: [String: Any] = [
@@ -101,6 +108,20 @@ enum TargetInfo {
             node["frame"] = ["x": f.origin.x, "y": f.origin.y, "w": f.size.width, "h": f.size.height]
         }
         return node
+    }
+
+    /// The best human-readable name for an element, for a tool result.
+    static func name(of el: AXUIElement) -> String {
+        let n = nameable(el)
+        for key in ["title", "description", "help"] {
+            if let v = n[key] as? String, !v.isEmpty { return v }
+        }
+        if let parent = n["parent"] as? [String: Any] {
+            for key in ["title", "description"] {
+                if let v = parent[key] as? String, !v.isEmpty { return v }
+            }
+        }
+        return ""
     }
 
     /// The web area's own `AXURL`, not the address bar's text: the address bar

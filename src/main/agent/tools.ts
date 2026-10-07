@@ -127,3 +127,143 @@ export function buildTools(): Anthropic.Messages.ToolUnion[] {
     },
   ];
 }
+
+// ── Hands-off ────────────────────────────────────────────────────────────────
+
+/// A hands-off run does not get the computer toolset at all. Every member of
+/// it either moves the shared pointer, types into whatever has focus, or
+/// photographs the whole display — the three things hands-off promises not to
+/// do. What it gets instead acts on *named* elements of a *named* app, through
+/// the accessibility tree (`sidecar/Sources/Hands.swift`).
+///
+/// Leaving the toolset in and refusing its members in the executor would have
+/// been less code and a worse run: a model offered `left_click` reaches for it,
+/// and every refusal is a wasted turn that teaches nothing.
+
+export const LOOK_TOOL = 'look';
+export const ACT_TOOL = 'act';
+export const SET_VALUE_TOOL = 'set_value';
+export const KEYS_TOOL = 'send_keys';
+export const OPEN_TOOL = 'open';
+
+export const HANDS_OFF_TOOLS = [LOOK_TOOL, ACT_TOOL, SET_VALUE_TOOL, KEYS_TOOL, OPEN_TOOL] as const;
+export type HandsOffTool = (typeof HANDS_OFF_TOOLS)[number];
+
+export const isHandsOffTool = (name: string): name is HandsOffTool =>
+  (HANDS_OFF_TOOLS as readonly string[]).includes(name);
+
+/** The verbs `act` accepts. `set_value` has its own tool because it carries
+ *  text, and text is what the keystroke-content guardrail reads. */
+export const ACT_VERBS = [
+  'press',
+  'focus',
+  'select',
+  'show_menu',
+  'confirm',
+  'cancel',
+  'increment',
+  'decrement',
+  'scroll_to_visible',
+  'raise',
+] as const;
+
+const ELEMENT_PROP = {
+  type: 'string',
+  description: 'An element id from the most recent `look`, e.g. "e42".',
+} as const;
+
+const APP_PROP = {
+  type: 'string',
+  description: 'The app’s bundle id, e.g. "com.tinyspeck.slackmacgap".',
+} as const;
+
+export function buildHandsOffTools(): Anthropic.Messages.ToolUnion[] {
+  return [
+    {
+      name: LOOK_TOOL,
+      description:
+        'Look at one app’s window without bringing it to the front: a picture of the window and its ' +
+        'accessibility tree, where every element has an id like e42. Works on a window that is behind ' +
+        'others. Look before you act, and look again after anything that changes the window — ids from ' +
+        'an older look stop resolving once the window changes.',
+      input_schema: {
+        type: 'object',
+        properties: {
+          app: APP_PROP,
+          window_title: {
+            type: 'string',
+            description: 'Optional: part of the title of a specific window of that app.',
+          },
+        },
+        required: ['app'],
+      },
+    },
+    {
+      name: ACT_TOOL,
+      description:
+        'Act on an element from the last look, through accessibility — the person’s pointer does not ' +
+        'move and their app stays in front. "press" clicks a button, link, checkbox or menu item; ' +
+        '"focus" puts the text cursor in a field (do this before send_keys); "select" picks a row, tab ' +
+        'or option; "show_menu" opens a pop-up or context menu; "confirm"/"cancel" are a default ' +
+        'button’s action; "increment"/"decrement" step a slider or stepper; "scroll_to_visible" ' +
+        'brings an element into view; "raise" brings one of the app’s windows to the top of that app.',
+      input_schema: {
+        type: 'object',
+        properties: {
+          element: ELEMENT_PROP,
+          action: { type: 'string', enum: [...ACT_VERBS] },
+        },
+        required: ['element', 'action'],
+      },
+    },
+    {
+      name: SET_VALUE_TOOL,
+      description:
+        'Replace the whole contents of a text field or text area with `text`, through accessibility. ' +
+        'The result says whether the field now reads back what you set. Some web apps accept the ' +
+        'value and ignore it; if it does not verify, focus the field and use send_keys instead.',
+      input_schema: {
+        type: 'object',
+        properties: {
+          element: ELEMENT_PROP,
+          text: { type: 'string' },
+        },
+        required: ['element', 'text'],
+      },
+    },
+    {
+      name: KEYS_TOOL,
+      description:
+        'Send keystrokes to one app’s focused element, without bringing the app forward. Give exactly ' +
+        'one of `key` — a shortcut like "cmd+k", "Return", "shift+Return", "Escape" — or `text` to type. ' +
+        'Focus the field with act first. Return in a chat app sends the message. Native apps take these ' +
+        'in the background; a web view (a browser, most Electron apps) usually ignores keys while its ' +
+        'window is not in front — there, use set_value for text and act for buttons.',
+      input_schema: {
+        type: 'object',
+        properties: {
+          app: APP_PROP,
+          key: { type: 'string' },
+          text: { type: 'string' },
+        },
+        required: ['app'],
+      },
+    },
+    {
+      name: OPEN_TOOL,
+      description:
+        'Launch an app, or open a URL or file in it, without bringing it to the front. Then look at it.',
+      input_schema: {
+        type: 'object',
+        properties: {
+          app: APP_PROP,
+          url: { type: 'string', description: 'Optional: a URL, or an absolute file path.' },
+        },
+        required: ['app'],
+      },
+    },
+    // `finish` is the same tool in both modes, and it stays last: the cache
+    // breakpoint sits on it.
+    buildTools().find((t) => 'name' in t && t.name === FINISH_TOOL)!,
+  ];
+}

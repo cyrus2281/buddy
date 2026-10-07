@@ -9,7 +9,7 @@ import { sidecar } from './sidecar/supervisor.js';
 import { permissions } from './permissions.js';
 import { CaptureScheduler } from './capture/scheduler.js';
 import { hotkeys } from './hotkey.js';
-import { broadcast, createHome, createHud, hideHud, setHudSticky, showHud, toggleHud, isHudVisible } from './windows.js';
+import { broadcast, createHome, createHud, hideHud, setHudSticky, showHud, showHudPassive, toggleHud, isHudVisible } from './windows.js';
 import { registerIpc, assertCoordinateScale, setHotkeyIssues } from './ipc.js';
 import { operator } from './agent/orchestrator.js';
 import { NotesEngine } from './notes/engine.js';
@@ -219,8 +219,14 @@ async function main() {
   createTray();
   createHud(); // built now so the hotkey is instant later
   // buddy's own clicks steal focus from the HUD constantly; blur must not
-  // dismiss the window the Stop button lives on.
-  setHudSticky(() => operator.isRunning());
+  // dismiss the window the Stop button lives on. Hands-off is the exception:
+  // buddy steals nothing, the person is working in another app, and a HUD
+  // that refused to get out of their way would be the opposite of the mode.
+  setHudSticky(() => operator.isRunning() && !operator.active()?.handsOff);
+  // A hands-off run asks without taking the keyboard (see `showHudPassive`).
+  operator.on('gate', () => {
+    if (operator.active()?.handsOff) showHudPassive();
+  });
 
   // Retention runs before capture starts: a machine that was asleep overnight
   // should not accumulate a second day of frames before the first sweep.
@@ -320,6 +326,9 @@ async function main() {
       notify.needsHuman(v.id, v.goal, v.haltReason ?? v.outcome?.summary ?? 'The run stopped.');
     }
     if (v.status === 'running') notifiedNeedsHuman = 0;
+    // A hands-off run happens out of sight, so its ending is brought back into
+    // view — passively, for the same reason its gates are.
+    if (v.handsOff && ['done', 'needs_human', 'waiting'].includes(v.status)) showHudPassive();
     // A run's own terminal state decides where the app lands; standby is the
     // one that outlives the run.
     if (v.status === 'waiting') {

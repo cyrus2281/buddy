@@ -41,6 +41,21 @@ export function describeStep(s: RunStep): string {
     // rather than as an unexplained gap in the log.
     case 'wake-check':
       return `Checked ${input.attempt}/${input.of}: ${truncate(String(s.result ?? ''), 70)}`;
+    // Hands-off: named elements in named apps, no pointer.
+    case 'hands-off':
+      return 'Working hands-off — your pointer and keyboard stay yours';
+    case 'look':
+      return `Looked at ${appLabel(input.app)}${input.window_title ? ` — “${truncate(String(input.window_title), 30)}”` : ''}`;
+    case 'act':
+      return `${String(input.action ?? 'press').replace(/_/g, ' ')} ${String(input.element ?? '')} — ${truncate(String(s.result ?? ''), 60)}`;
+    case 'set_value':
+      return `Filled ${String(input.element ?? '')} with “${truncate(String(input.text ?? ''), 40)}”`;
+    case 'send_keys':
+      return input.key
+        ? `Pressed ${String(input.key)} in ${appLabel(input.app)}`
+        : `Typed “${truncate(String(input.text ?? ''), 40)}” into ${appLabel(input.app)}`;
+    case 'open':
+      return `Opened ${input.url ? `${truncate(String(input.url), 40)} in ` : ''}${appLabel(input.app)} in the background`;
     case 'resume':
       return `Woke up and carried on — ${truncate(String(input.condition ?? ''), 50)}`;
     case 'human-input':
@@ -57,6 +72,13 @@ export function describeStep(s: RunStep): string {
 }
 
 const truncate = (s: string, n: number) => (s.length > n ? s.slice(0, n - 1) + '…' : s);
+
+/** `com.tinyspeck.slackmacgap` → `slackmacgap`: the last segment of a bundle
+ *  id is nearly always recognisable, and the whole id is in the log's detail. */
+const appLabel = (raw: unknown) => {
+  const id = String(raw ?? '');
+  return id.split('.').pop() || id || 'the app';
+};
 const sentence = (s: string) => {
   const t = s.replace(/_/g, ' ');
   return t.charAt(0).toUpperCase() + t.slice(1);

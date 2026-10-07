@@ -18,6 +18,8 @@ enum AXTree {
         var pid: pid_t?
         var depth: Int = maxDepth
         var maxNodes: Int = AXTree.maxNodes
+        /// Give every node an id the hands-off tools can name (`Hands.Registry`).
+        var register = false
     }
 
     static func tree(_ opts: Options) throws -> [String: Any] {
@@ -38,7 +40,8 @@ enum AXTree {
         }
 
         var budget = opts.maxNodes
-        let node = walk(root, depth: min(opts.depth, maxDepth), budget: &budget)
+        if opts.register { Hands.Registry.beginReading() }
+        let node = walk(root, depth: min(opts.depth, maxDepth), budget: &budget, register: opts.register)
         let app = NSRunningApplication(processIdentifier: pid)
         return [
             "pid": Int(pid),
@@ -81,9 +84,10 @@ enum AXTree {
         (focusedSummary()?["isSecureTextField"] as? Bool) ?? false
     }
 
-    private static func walk(_ el: AXUIElement, depth: Int, budget: inout Int) -> [String: Any] {
+    static func walk(_ el: AXUIElement, depth: Int, budget: inout Int, register: Bool = false) -> [String: Any] {
         budget -= 1
         var node: [String: Any] = [:]
+        if register { node["id"] = Hands.Registry.register(el) }
         if let r = string(el, kAXRoleAttribute) { node["role"] = r }
         if let s = string(el, kAXSubroleAttribute), !s.isEmpty { node["subrole"] = s }
         if let t = string(el, kAXTitleAttribute), !t.isEmpty { node["title"] = t }
@@ -102,7 +106,7 @@ enum AXTree {
         var kids: [[String: Any]] = []
         for child in arr {
             if budget <= 0 { node["truncated"] = true; break }
-            kids.append(walk(child, depth: depth - 1, budget: &budget))
+            kids.append(walk(child, depth: depth - 1, budget: &budget, register: register))
         }
         if !kids.isEmpty { node["children"] = kids }
         return node

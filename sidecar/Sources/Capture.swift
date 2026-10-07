@@ -61,6 +61,11 @@ enum Capture {
         let filter: SCContentFilter
         let display: SCDisplay
         var cropRect: CGRect? = nil
+        /// Set for a window capture: its frame in global points, which is both
+        /// the size the picture should be and the origin its coordinates are
+        /// relative to. Without it a window was rendered at the display's size,
+        /// stretched — a picture of a 600-point window 1728 points wide.
+        var windowFrame: CGRect? = nil
 
         switch target {
         case .display(let wanted):
@@ -75,9 +80,13 @@ enum Capture {
             guard let w = content.windows.first(where: { $0.windowID == windowID }) else {
                 throw RPCError.invalidParams("no such window: \(windowID)")
             }
-            guard let d = content.displays.first else { throw RPCError.internalError("no displays") }
+            // The display the window is mostly on, for the backing scale.
+            let mid = CGPoint(x: w.frame.midX, y: w.frame.midY)
+            guard let d = content.displays.first(where: { CGDisplayBounds($0.displayID).contains(mid) })
+                    ?? content.displays.first else { throw RPCError.internalError("no displays") }
             display = d
             filter = SCContentFilter(desktopIndependentWindow: w)
+            windowFrame = w.frame
 
         case .region(let rect):
             guard let d = content.displays.first else { throw RPCError.internalError("no displays") }
@@ -92,8 +101,8 @@ enum Capture {
             (screen.deviceDescription[.init("NSScreenNumber")] as? NSNumber)?.uint32Value == display.displayID
         }
         let backing = screen?.backingScaleFactor ?? 2.0
-        let logicalW = display.width
-        let logicalH = display.height
+        let logicalW = windowFrame.map { Int($0.width.rounded()) } ?? display.width
+        let logicalH = windowFrame.map { Int($0.height.rounded()) } ?? display.height
 
         let cfg = SCStreamConfiguration()
         cfg.width = Int(Double(logicalW) * backing)
@@ -147,8 +156,8 @@ enum Capture {
                       width: outW, height: outH,
                       logicalWidth: logicalW, logicalHeight: logicalH,
                       scale: scale, phash: hash, displayID: display.displayID,
-                      originX: Double(cropRect?.origin.x ?? bounds.origin.x),
-                      originY: Double(cropRect?.origin.y ?? bounds.origin.y))
+                      originX: Double(cropRect?.origin.x ?? windowFrame?.origin.x ?? bounds.origin.x),
+                      originY: Double(cropRect?.origin.y ?? windowFrame?.origin.y ?? bounds.origin.y))
     }
 
     private static func resize(_ image: CGImage, to size: CGSize) -> CGImage? {

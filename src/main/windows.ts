@@ -130,6 +130,30 @@ export function showHud() {
   log.debug('hud', 'shown', { display: display.id });
 }
 
+/**
+ * The HUD, shown without taking keyboard focus.
+ *
+ * For a hands-off run, which is the one case where the person is typing into
+ * another app while buddy works. A confirm gate that grabbed focus would put
+ * the HUD under their fingers mid-sentence — and a stray Esc is a deny. So it
+ * appears, and waits to be clicked.
+ */
+export function showHudPassive() {
+  const win = createHud();
+  if (win.isVisible()) return;
+  const display = screen.getDisplayNearestPoint(screen.getCursorScreenPoint());
+  const { x, y, width, height } = display.workArea;
+  win.setBounds({
+    x: Math.round(x + (width - HUD_WIDTH) / 2),
+    y: Math.round(y + height * 0.28),
+    width: HUD_WIDTH,
+    height: HUD_HEIGHT,
+  });
+  win.showInactive();
+  win.webContents.send('hud:shown');
+  log.debug('hud', 'shown without focus');
+}
+
 /** The HUD grows and shrinks with what it is showing: a goal prompt, a live
  *  step feed, or a collapsed pill. Anchored at the top so the header stays put
  *  while the body changes size, which reads as growth rather than as a jump. */

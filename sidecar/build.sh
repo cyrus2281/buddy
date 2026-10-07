@@ -3,7 +3,7 @@
 #
 # Deliberately plain swiftc against the Command Line Tools SDK: no Xcode, no
 # Apple Developer account, no Swift package manifest to keep in sync. The whole
-# sidecar is nine files and nothing about it needs a build system.
+# sidecar is ten files and nothing about it needs a build system.
 #
 # Info.plist is linked into the binary's __TEXT,__info_plist section. A bare
 # executable has no bundle to carry one, and without the microphone and speech
@@ -40,6 +40,7 @@ swiftc -O \
   Sources/AXTree.swift \
   Sources/Input.swift \
   Sources/Target.swift \
+  Sources/Hands.swift \
   Sources/Voice.swift \
   Sources/main.swift
 
