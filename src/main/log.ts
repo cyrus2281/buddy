@@ -40,7 +40,21 @@ class Logger {
     fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
     this.file = path.join(dir, 'buddy.log');
     this.rotateIfNeeded();
-    this.stream = fs.createWriteStream(this.file, { flags: 'a', mode: 0o600 });
+    const stream = fs.createWriteStream(this.file, { flags: 'a', mode: 0o600 });
+    // A log file that cannot be written must not take the app down with it.
+    // The stream opens asynchronously, and an `error` with no listener is an
+    // uncaught exception — which Electron answers with a modal dialog that
+    // blocks the main thread. That is how `check:m1` hung: it removes its
+    // temp directory in the same tick it opens the log, the open fails with
+    // ENOENT, and the process sat behind an invisible-to-the-terminal alert
+    // instead of exiting. The ring buffer and listeners keep working; only the
+    // file stops.
+    stream.on('error', (e) => {
+      if (this.stream !== stream) return;
+      this.stream = null;
+      this.warn('log', 'log file unavailable; logging to memory only', { file: this.file, error: e.message });
+    });
+    this.stream = stream;
   }
 
   private rotateIfNeeded() {
