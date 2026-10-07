@@ -120,13 +120,34 @@ Recognition, once each.
   you a question, and "go ahead" is not an answer), when it could not read the
   screen, or under leashless — and it never answers a confirm gate. In each case
   the HUD says what would work instead.
+- **"Hey buddy, *anything you want done*"** — "hey buddy, send a Slack message
+  to Hugo asking him if he's done recording his project" — opens the HUD with
+  that as the goal, in your words (your casing, your names), with no screen
+  reading, since you have just said what you want. Apps it names go on the
+  allowlist it shows ("a Slack message" is a run that has to touch Slack). It
+  starts after a three-second countdown — Esc or "never mind" stops it, Enter
+  starts it now, typing a key lets you fix a misheard word — or, with **Start
+  spoken instructions on their own** off in Settings › Voice, it waits for
+  Enter or "go ahead". Saying "hey buddy", pausing, and then saying what you
+  want works too, for eight seconds. buddyd cuts an utterance at a 0.9 s pause,
+  so anything said within four seconds of an instruction is taken as the rest of
+  it and appended. Small talk after the wake phrase ("hey buddy, how's it
+  going?", "good boy") and questions ("hey buddy, what's the weather?") are not
+  instructions and do nothing. An instruction never replaces a run in progress,
+  and anything a run does that sends or deletes is still gated by the profile,
+  exactly as if the goal had been typed.
 - **"Never mind"** or **"cancel"** closes the HUD. During a run, **"buddy,
   stop"** stops it. A bare "stop" does not, for the reason §7.3 gives for
   stopping always being something you say on purpose: "stop" in a room is often
   meant for someone else. It is a convenience beside the three kill switches,
   not one of them — it depends on `buddyd` and a working microphone.
 
-**What it hears stays here.** Recognition is Apple's on-device model or nothing:
+**What it hears stays here.** An instruction is the one exception to "matched
+and dropped" — its words become the goal, which is shown back to you and stored
+with the run like a typed goal. The log still records only that one was heard
+and how many words it had.
+
+**The rest of what it hears stays here.** Recognition is Apple's on-device model or nothing:
 if the Mac has no on-device English model, voice does not run, rather than
 stream the room to a server. Audio is never saved. `buddyd` sends only finished
 utterances, which are matched in memory and dropped; the log records *that* a
@@ -304,7 +325,7 @@ state and the ghost on this screen.
 | `npm run check:m2` | The M2 exit-criteria checks (66 of them) |
 | `npm run check:m3` | The M3 exit-criteria checks (66 of them) |
 | `npm run check:m4` | The M4 exit-criteria checks (50 of them) |
-| `npm run check:voice` | The "hey buddy" checks (21 of them) — matcher, routing, the listener, and the real `buddyd` |
+| `npm run check:voice` | The "hey buddy" checks (26 of them) — matcher, routing, the listener, and the real `buddyd` |
 | `npm run check:memory` | The M5 checks (39 of them) — the real embedder, the real sqlite-vec index, retrieval quality on a benchmark, learning through a scripted rollup |
 | `npm run check:island` | The island and ghost-cursor checks (15 of them) — placement, every state, the ghost's contract with the executor, and real captures. `BUDDY_ISLAND_TOUR=<dir>` also photographs every state |
 | `npm run check:hands` | The hands-off checks (26 of them) — the tool surface, the guardrails against the named app, the loop, and a real press, value and window capture through the real `buddyd` |

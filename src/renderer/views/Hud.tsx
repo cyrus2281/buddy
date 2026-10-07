@@ -72,6 +72,12 @@ export function Hud() {
   const [heardGo, setHeardGo] = useState(false);
   /** Why the last one was not acted on, in words that say what would work. */
   const [voiceNote, setVoiceNote] = useState<string | null>(null);
+  /** A spoken instruction — "hey buddy, send a Slack message to Hugo…" — and
+   *  when it landed, which the countdown runs from. */
+  const [spoken, setSpoken] = useState<{ text: string; at: number } | null>(null);
+  /** Apps the instruction named, added to the allowlist it starts with. */
+  const [spokenApps, setSpokenApps] = useState<string[]>([]);
+  const [now, setNow] = useState(Date.now());
   const safe = useMotionSafe();
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const bodyRef = useRef<HTMLDivElement>(null);
@@ -92,9 +98,12 @@ export function Hud() {
   /** §6.1: `target_apps` seeds the allowlist the user confirms in the same
    *  keystroke as the goal. Before the reading lands there is nothing to seed
    *  it with, so the configured default stands and the panel says which. */
-  const seededAllowlist: Allowlist = reading?.target_apps.length
+  const baseAllowlist: Allowlist = reading?.target_apps.length
     ? { apps: reading.target_apps, domains: snapshot?.defaultAllowlist.domains ?? [] }
     : (snapshot?.defaultAllowlist ?? { apps: [], domains: [] });
+  const seededAllowlist: Allowlist = spoken
+    ? { ...baseAllowlist, apps: [...new Set([...baseAllowlist.apps, ...spokenApps])] }
+    : baseAllowlist;
   const allowlistSeeded = !!reading?.target_apps.length;
 
   const effectiveProfile: RunProfile = profile ?? reading?.proposed_profile ?? 'attended';
@@ -130,6 +139,8 @@ export function Hud() {
         setError(null);
         setHeardGo(false);
         setVoiceNote(null);
+        setSpoken(null);
+        setSpokenApps([]);
       }
     });
     const offHide = api.onHudHidden(() => setVisible(false));
@@ -148,6 +159,8 @@ export function Hud() {
     setError(null);
     setHeardGo(false);
     setVoiceNote(null);
+    setSpoken(null);
+    setSpokenApps([]);
     void api.cancelArm();
     void api.hideHud();
   }, []);
@@ -155,6 +168,7 @@ export function Hud() {
   const start = useCallback(
     async (withGoal: string, withProfile: RunProfile) => {
       setError(null);
+      setSpoken(null);
       setPhase('acting');
       try {
         await api.startRun({
@@ -175,6 +189,21 @@ export function Hud() {
   useEffect(
     () =>
       api.onVoiceCommand((c) => {
+        if (c.kind === 'instruct') {
+          // Someone mid-way through typing a goal keeps it; a run in flight
+          // is not replaced by a sentence (main does not route one then).
+          const said = c.text;
+          if (phase === 'typing' || !said) return;
+          setVoiceNote(null);
+          setHeardGo(false);
+          setSpoken((prev) => {
+            const text = c.append && prev ? `${prev.text} ${said.charAt(0).toLowerCase()}${said.slice(1)}` : said;
+            setTyped(text);
+            return { text, at: Date.now() };
+          });
+          setSpokenApps((prev) => [...new Set([...(c.append ? prev : []), ...(c.apps ?? [])])]);
+          return;
+        }
         if (c.kind === 'dismiss') {
           // Half a typed goal is someone at the keyboard; a "never mind" heard
           // across the room is not theirs to lose it to.
@@ -205,11 +234,46 @@ export function Hud() {
     else if (d.act === 'start') void start(goal, effectiveProfile);
   }, [heardGo, phase, gate, running, typed, inference?.phase, mustAsk, goal, effectiveProfile, start]);
 
+  // The countdown for a spoken instruction (PRD §8.1 has no auto-proceed
+  // countdown, and this is the one exception: the instruction *is* the
+  // explicit act — the person said what to do, by name — and the seconds are
+  // only there so a misheard name can be caught before buddy acts on it).
+  // Everything a run can do that is irreversible is still gated by the
+  // profile, exactly as if the goal had been typed.
+  const SPOKEN_COUNTDOWN_MS = 3_000;
+  const autoStart = settings?.voiceInstructionsAutoStart ?? true;
+  useEffect(() => {
+    if (!spoken || !autoStart || phase !== 'armed' || gate || running) return;
+    const tick = setInterval(() => setNow(Date.now()), 200);
+    const go = setTimeout(() => {
+      const d = voiceGo({
+        armed: true,
+        typed: spoken.text,
+        inference: inference?.phase ?? null,
+        mustAsk: false,
+        goal: spoken.text,
+        profile: effectiveProfile,
+      });
+      if (d.act === 'start') void start(spoken.text, effectiveProfile);
+      else if (d.act === 'refuse') {
+        setVoiceNote(d.why);
+        setSpoken(null);
+      }
+    }, Math.max(0, spoken.at + SPOKEN_COUNTDOWN_MS - Date.now()));
+    return () => {
+      clearInterval(tick);
+      clearTimeout(go);
+    };
+  }, [spoken, autoStart, phase, gate, running, inference?.phase, effectiveProfile, start]);
+  const countdown = spoken && autoStart ? Math.max(0, Math.ceil((spoken.at + SPOKEN_COUNTDOWN_MS - now) / 1000)) : null;
+
   /** Start typing to take over the goal. Deliberately not a button: the PRD's
    *  interaction is "Enter to run, type to amend, Esc to cancel", and putting
    *  the amend path behind a click would make the fast case slower. */
   const beginTyping = useCallback(
     (seed: string) => {
+      // Editing a spoken goal stops its countdown: the person is fixing it.
+      setSpoken(null);
       setTyped(seed);
       setPhase('typing');
       setTimeout(() => {
@@ -378,6 +442,8 @@ export function Hud() {
                       listening={!!voice?.listening}
                       heardGo={heardGo}
                       voiceNote={voiceNote}
+                      spoken={spoken?.text ?? null}
+                      countdown={countdown}
                       onPick={(g) => setTyped(g)}
                       onAmend={() => beginTyping(goal)}
                       onRun={() => goal && void start(goal, effectiveProfile)}
@@ -480,6 +546,8 @@ function Armed({
   listening,
   heardGo,
   voiceNote,
+  spoken,
+  countdown,
   onPick,
   onAmend,
   onRun,
@@ -505,6 +573,10 @@ function Armed({
   /** A spoken go-ahead is being held for the reading. */
   heardGo: boolean;
   voiceNote: string | null;
+  /** The goal as it was said, when it was said rather than read or typed. */
+  spoken: string | null;
+  /** Seconds until a spoken goal starts on its own; null when it will wait. */
+  countdown: number | null;
   onPick: (goal: string) => void;
   onAmend: () => void;
   onRun: () => void;
@@ -524,11 +596,11 @@ function Armed({
 
   return (
     <div className="no-drag flex flex-col gap-4">
-      <GoalLine state={state} />
+      {spoken ? <SpokenGoal text={spoken} countdown={countdown} listening={listening} /> : <GoalLine state={state} />}
 
-      {reading?.injection_notice && <InjectionNotice quote={reading.injection_notice} />}
+      {!spoken && reading?.injection_notice && <InjectionNotice quote={reading.injection_notice} />}
 
-      {mustAsk && reading ? (
+      {spoken ? null : mustAsk && reading ? (
         <Alternatives reading={reading} onPick={onPick} />
       ) : (
         <>
@@ -708,6 +780,40 @@ function Armed({
           </button>
         </div>
       </div>
+    </div>
+  );
+}
+
+/** A goal that was said rather than read: shown as heard, so a misheard name
+ *  is caught before buddy acts on it, with the countdown and the ways out. */
+function SpokenGoal({ text, countdown, listening }: { text: string; countdown: number | null; listening: boolean }) {
+  const safe = useMotionSafe();
+  return (
+    <div>
+      <div className="flex items-baseline justify-between gap-3">
+        <p className="text-[10px] uppercase tracking-[0.1em] text-fog-500">You said</p>
+        {countdown != null ? (
+          <span className="font-mono text-[10px] text-ember-300">starting in {countdown}s</span>
+        ) : (
+          <span className="text-[10px] text-fog-500">
+            Enter{listening ? ' or “go ahead”' : ''} to start
+          </span>
+        )}
+      </div>
+      <motion.h1
+        key={text}
+        initial={safe ? { opacity: 0, y: 4 } : false}
+        animate={{ opacity: 1, y: 0 }}
+        transition={safe ? spring : { duration: 0 }}
+        className="mt-1.5 text-[17px] leading-snug font-light tracking-tight text-fog-100"
+      >
+        “{text}”
+      </motion.h1>
+      <p className="mt-2 text-[11px] leading-relaxed text-fog-500">
+        {countdown != null
+          ? `Esc${listening ? ' or “never mind”' : ''} to stop it, Enter to start now, or start typing to fix a word.`
+          : 'Start typing to fix a word. Anything that sends or deletes still asks first.'}
+      </p>
     </div>
   );
 }

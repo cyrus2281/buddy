@@ -18,7 +18,8 @@ import { Activation } from './agent/activation.js';
 import { StandbyManager } from './agent/standby.js';
 import { notify } from './notify.js';
 import { VoiceListener } from './voice/listener.js';
-import { routeIntent } from './voice/route.js';
+import { routeInstruction, routeIntent, VOICE_CONTINUE_WINDOW_MS, VOICE_DICTATION_WINDOW_MS } from './voice/route.js';
+import { appsMentioned } from './voice/apps.js';
 import { island } from './island.js';
 import { CH } from '../shared/ipc.js';
 import type { AppState, VoiceIntent } from '../shared/types.js';
@@ -43,6 +44,13 @@ let lastFront = { bundleId: '', windowTitle: '' };
 /** The run id already announced as needing a person, so one parked run does not
  *  produce a notification per `update` event. */
 let notifiedNeedsHuman = 0;
+/** Until when an utterance without "hey buddy" is taken as the instruction:
+ *  briefly after a bare "hey buddy". Zero — the room is just the room — the
+ *  rest of the time. */
+let dictationUntil = 0;
+/** Until when an utterance is taken as the rest of the last instruction —
+ *  people pause mid-sentence, and buddyd cuts utterances at the pause. */
+let continueUntil = 0;
 
 function setState(next: AppState) {
   if (next === state) return;
@@ -214,8 +222,13 @@ async function main() {
   memory.attach(scheduler);
   voice = new VoiceListener({ settings: () => settings.get(), transport: sidecar });
   voice.on('status', () => updateTray());
-  voice.on('wake', () => activate('voice'));
+  voice.on('wake', () => {
+    // A bare "hey buddy" — say what you want next, without saying it again.
+    dictationUntil = Date.now() + VOICE_DICTATION_WINDOW_MS;
+    activate('voice');
+  });
   voice.on('intent', (i: VoiceIntent) => onVoiceIntent(i));
+  voice.on('instruction', (i: { text: string; addressed: boolean; plausible: boolean }) => void onVoiceInstruction(i));
   registerIpc({ scheduler, engine, activation, standby, voice, getState: () => state, setState });
   createTray();
   createHud(); // built now so the hotkey is instant later
@@ -408,6 +421,8 @@ function activate(source: 'hotkey' | 'voice') {
       armedAt = Date.now();
       return;
     }
+    dictationUntil = 0;
+    continueUntil = 0;
     activation.cancel('dismissed');
     hideHud();
     setState(scheduler.isRunning() ? 'OBSERVING' : 'IDLE');
@@ -439,6 +454,10 @@ function onVoiceIntent(intent: VoiceIntent) {
       showHudNow();
       return;
     case 'dismiss':
+      dictationUntil = 0;
+      continueUntil = 0;
+      broadcast(CH.onVoiceCommand, { kind: action, t: Date.now() });
+      return;
     case 'confirm':
       // The HUD owns the goal, the profile and the allowlist, so starting the
       // run is its call; and only it knows whether someone is mid-way through
@@ -447,6 +466,47 @@ function onVoiceIntent(intent: VoiceIntent) {
       broadcast(CH.onVoiceCommand, { kind: action, t: Date.now() });
       return;
   }
+}
+
+/**
+ * "Hey buddy, send a Slack message to Hugo asking him if he's done recording
+ * his project."
+ *
+ * The HUD opens with that as the goal — no screen reading, since the person
+ * has just said what they want, and the apps it names added to the allowlist
+ * it shows. Whether it then starts on its own (after a countdown that Esc or
+ * "never mind" stops) or waits for "go ahead" is the HUD's call and a
+ * setting; what reaches here is only whether anyone was talking to buddy.
+ */
+async function onVoiceInstruction(i: { text: string; addressed: boolean; plausible: boolean }) {
+  const now = Date.now();
+  const { action, why } = routeInstruction(i, { running: operator.isRunning(), dictationUntil, continueUntil, now });
+  if (action === 'ignore') {
+    if (i.addressed) log.info('voice', 'instruction ignored', { why });
+    return;
+  }
+  const append = action === 'continue';
+  dictationUntil = 0;
+  continueUntil = now + VOICE_CONTINUE_WINDOW_MS;
+  if (!i.addressed) log.info('voice', append ? 'instruction continued' : 'instruction dictated', { words: i.text.split(/\s+/).length });
+
+  // The person said the goal, so the screen reading the hotkey would start is
+  // not needed — and if a bare "hey buddy" started one, it is cancelled rather
+  // than left to bill for a guess nobody will use.
+  activation.cancel('superseded');
+  if (!isHudVisible()) {
+    showHudNow();
+    setState('ARMED');
+  }
+  armedAt = now;
+
+  let apps: string[] = [];
+  try {
+    apps = appsMentioned(i.text, (await sidecar.appWindows()).apps);
+  } catch {
+    apps = appsMentioned(i.text, []);
+  }
+  broadcast(CH.onVoiceCommand, { kind: 'instruct', text: i.text, apps, append, t: now });
 }
 
 function bindHotkeys() {

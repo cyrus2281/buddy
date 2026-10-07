@@ -825,6 +825,24 @@ function VoicePanel({
         leashless. A bare “stop” does not stop a run — say “buddy, stop”.
       </p>
 
+      <div className="flex items-start justify-between gap-5 border-t border-ink-700/60 pt-4">
+        <div className="min-w-0">
+          <p className="text-[12px] font-medium text-fog-100">Start spoken instructions on their own</p>
+          <p className="mt-1 text-[11px] leading-relaxed text-fog-500">
+            “Hey buddy, send a Slack message to Hugo asking if he’s done recording” opens the HUD
+            with that as the goal and the apps it names on the allowlist. On, it starts after a
+            three-second countdown you can stop with Esc or “never mind”; off, it waits for Enter or
+            “go ahead”. Either way, anything that sends or deletes still asks first under attended.
+            You can also say “hey buddy”, pause, and then say what you want.
+          </p>
+        </div>
+        <Toggle
+          checked={settings.voiceInstructionsAutoStart}
+          label="Start spoken instructions on their own"
+          onChange={(v) => void update({ voiceInstructionsAutoStart: v })}
+        />
+      </div>
+
       <ListField
         label="Go-ahead phrases"
         hint="One per line. Matched against the whole utterance, ignoring “okay”, “please” and “buddy”. “Stop”, “cancel” and “never mind” are fixed and always win. An empty list turns voice go-aheads off and leaves “hey buddy” working."

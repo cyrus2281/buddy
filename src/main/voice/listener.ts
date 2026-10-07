@@ -175,6 +175,15 @@ export class VoiceListener extends EventEmitter {
       log.info('voice', 'heard a command', { ...heard.intent });
       this.emit('intent', heard.intent);
     }
+    // The words of an instruction never reach the log — only that one was
+    // heard and how long it was. An unaddressed one is not even that: until
+    // main decides someone was talking to buddy, it is the room talking.
+    if (heard.instruction) {
+      if (heard.instruction.addressed) {
+        log.info('voice', 'heard an instruction', { words: heard.instruction.text.split(/\s+/).length });
+      }
+      this.emit('instruction', heard.instruction);
+    }
   }
 
   private publish(raw: Partial<RawVoiceStatus>, problem: string | null) {

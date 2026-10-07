@@ -192,6 +192,11 @@ export interface Settings {
   /** What counts as "go ahead" once the HUD is showing a suggestion. Stored as
    *  typed and normalised when matched, so "Let's go!" still reads as written. */
   voiceConfirmPhrases: string[];
+  /** "Hey buddy, send a Slack message to Hugo…" — a spoken instruction opens
+   *  the HUD with it as the goal. This decides whether it then starts on its
+   *  own after a short, visible countdown (Esc or "never mind" stops it), or
+   *  waits for Enter or "go ahead". */
+  voiceInstructionsAutoStart: boolean;
 
   // M5 — buddy learns you.
   /** Learn durable facts about the person from what buddy watches and from
@@ -318,6 +323,7 @@ export const DEFAULT_SETTINGS: Settings = {
   anthropicBaseUrl: '',
   anthropicModels: {},
   voiceEnabled: false,
+  voiceInstructionsAutoStart: true,
   learningEnabled: true,
   handsOffDefault: false,
   islandEnabled: true,
@@ -884,8 +890,16 @@ export type VoiceIntent = { kind: 'confirm' } | { kind: 'cancel'; addressed: boo
  *  can be started from — and the one place that knows whether a goal is being
  *  typed that a dismissal would throw away. */
 export interface VoiceCommand {
-  kind: 'confirm' | 'dismiss';
+  kind: 'confirm' | 'dismiss' | 'instruct';
   t: number;
+  /** `instruct`: the goal, in the person's words. */
+  text?: string;
+  /** `instruct`: apps the instruction names, as bundle ids, to add to the
+   *  allowlist — "a Slack message" is a run that has to touch Slack. */
+  apps?: string[];
+  /** `instruct`: this is the rest of the previous instruction (a pause
+   *  mid-sentence), to be appended rather than replace it. */
+  append?: boolean;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

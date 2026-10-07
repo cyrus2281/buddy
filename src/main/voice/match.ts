@@ -55,6 +55,56 @@ export interface Heard {
   /** The utterance was the wake phrase, alone or followed by a command. */
   wake: boolean;
   intent: VoiceIntent | null;
+  /**
+   * Something to *do*, in the person's words: "hey buddy, send a Slack message
+   * to Hugo asking him if he's done recording". `addressed` when it came after
+   * the wake phrase; an unaddressed one only counts while main is listening
+   * for dictation (right after a bare "hey buddy", or mid-instruction).
+   */
+  instruction: { text: string; addressed: boolean; plausible: boolean } | null;
+}
+
+/** What people say to a dog, a child or a friend after "hey buddy". Matched
+ *  on the start of what follows the wake phrase; an instruction never starts
+ *  like this, and a misfire here would start a run on a pleasantry. */
+const CHITCHAT =
+  /^(how (are|is|s|re|have|was|do)|hows|whats up|what s up|sup|good (boy|girl|job|morning|night|afternoon|evening)|come (here|on)|sit|stay|thank|thanks|i love|love you|hello|hi|hey|yo|nice|well done|you re|youre|are you|long time|see you|bye|goodnight|happy)\b/;
+
+/** A question is for the Ask box, not a run — unless it is a request wearing a
+ *  question's clothes ("can you send…"), which `POLITE` takes off first. */
+const QUESTION = /^(what|whats|who|whos|when|where|why|how|which|is|are|was|were|do|does|did|have|has|should|shall)\b/;
+const POLITE = /^(can you|could you|would you|will you|would you mind|i need you to|i want you to|id like you to|please)\b\s*/;
+
+/** Normalised words that read as an instruction: long enough to say what to
+ *  do, not small talk, not a question. */
+export function looksLikeInstruction(norm: string, addressed: boolean): boolean {
+  const words = stripLeading(norm.split(' ').filter(Boolean));
+  const s = words.join(' ').replace(POLITE, '');
+  const n = s.split(' ').filter(Boolean).length;
+  // Addressed, two words is enough ("open Slack"). Unaddressed, it takes three:
+  // a room says plenty of two-word things.
+  if (n < (addressed ? 2 : 3)) return false;
+  if (CHITCHAT.test(s)) return false;
+  if (QUESTION.test(s)) return false;
+  return true;
+}
+
+/**
+ * The instruction as the person said it — their casing, their names, their
+ * punctuation — with the wake phrase, leading fillers and a polite wrapper
+ * taken off. "Hugo" stays "Hugo"; normalising for matching would have made it
+ * "hugo", and the goal is shown back to them and handed to the Operator.
+ */
+export function instructionText(original: string): string {
+  let t = original.trim();
+  const lead =
+    /^(?:(?:okay|ok|so|um|uh|oh|well|yeah|yes|alright|all right|and|then|now|just)[\s,.!?:;-]+)*(?:(?:hey|hi|hay|okay|ok)[\s,]+(?:buddy|buddie|budy|body)\b[\s,.!?:;-]*)+/i;
+  t = t.replace(lead, '');
+  t = t.replace(/^(?:(?:okay|ok|so|um|uh|oh|well|yeah|alright|now|just|and|then)[\s,]+)+/i, '');
+  t = t.replace(/^(?:can you|could you|would you mind|would you|will you|i need you to|i want you to|i['’]d like you to|please)[\s,]+/i, '');
+  t = t.replace(/[\s,]+(?:please|thanks|thank you|buddy)[.!?]*$/i, '');
+  t = t.replace(/\?$/, '').trim();
+  return t ? t[0]!.toUpperCase() + t.slice(1) : t;
 }
 
 export function interpret(text: string, confirmPhrases: string[]): Heard {
@@ -85,10 +135,28 @@ export function interpret(text: string, confirmPhrases: string[]): Heard {
   const addressed = woke || words.includes('buddy');
   const intent = intentOf(rest, confirm, addressed);
 
-  if (woke && rest && !intent) return { wake: false, intent: null };
+  if (woke && rest && !intent) {
+    // Not a command: an instruction, or something said to someone else. The
+    // HUD is not woken for an instruction — main opens it with the
+    // instruction already in it, and skips the screen reading the wake would
+    // have started, since the person has just said what they want.
+    return looksLikeInstruction(rest, true)
+      ? { wake: false, intent: null, instruction: { text: instructionText(text), addressed: true, plausible: true } }
+      : { wake: false, intent: null, instruction: null };
+  }
+  // Every other unaddressed utterance is passed up, marked with whether it
+  // reads like an instruction on its own. Whether anyone was asking is main's
+  // call (`routeInstruction`): straight after a bare "hey buddy" it has to be
+  // plausible; as the rest of a sentence buddyd cut at a pause, it need not
+  // be — "…ask Hugo / how the recording is going" is a continuation that
+  // starts with a question word. Outside both, it is just the room talking.
+  const loose =
+    !woke && !intent && words.length > 0
+      ? { text: instructionText(text), addressed: false, plausible: looksLikeInstruction(norm, false) }
+      : null;
   // "Hey buddy, stop" is addressed, not a request to open the HUD and then
   // close it again.
-  return { wake: woke && intent?.kind !== 'cancel', intent };
+  return { wake: woke && intent?.kind !== 'cancel', intent, instruction: loose };
 }
 
 function intentOf(rest: string, confirm: Set<string>, addressed: boolean): VoiceIntent | null {

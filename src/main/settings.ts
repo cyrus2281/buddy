@@ -138,6 +138,7 @@ class SettingsStore extends EventEmitter {
     // the way the user wrote it.
     out.voiceConfirmPhrases = cleanList(out.voiceConfirmPhrases);
     out.voiceEnabled = !!out.voiceEnabled;
+    out.voiceInstructionsAutoStart = out.voiceInstructionsAutoStart !== false;
     out.learningEnabled = out.learningEnabled !== false;
     out.handsOffDefault = !!out.handsOffDefault;
     out.islandEnabled = out.islandEnabled !== false;

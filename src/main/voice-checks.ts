@@ -28,7 +28,8 @@ import { settings } from './settings.js';
 import { sidecar, type RawVoiceStatus, type VoiceEvent } from './sidecar/supervisor.js';
 import { interpret, normalizeSpeech, recognizerHints } from './voice/match.js';
 import { VoiceListener, explain, type VoiceTransport } from './voice/listener.js';
-import { routeIntent, VOICE_CONFIRM_WINDOW_MS } from './voice/route.js';
+import { routeInstruction, routeIntent, VOICE_CONFIRM_WINDOW_MS, VOICE_CONTINUE_WINDOW_MS, VOICE_DICTATION_WINDOW_MS } from './voice/route.js';
+import { appsMentioned } from './voice/apps.js';
 import { voiceGo } from '../shared/voice.js';
 import { KILL_SWITCH_LABEL } from './agent/killswitch.js';
 import { DEFAULT_SETTINGS, type VoiceIntent } from '../shared/types.js';
@@ -194,6 +195,58 @@ async function run() {
     return `${hints.length} recognizer hints`;
   });
 
+  await check('"hey buddy, <instruction>" is heard as the goal, in the person’s own words', () => {
+    const h = interpret("Hey buddy, send a Slack message to Hugo asking him if he's done recording his project", P);
+    eq(h.wake, false, 'not a wake — the HUD opens with the goal, not with a screen reading');
+    eq(h.intent, null, 'not a command');
+    eq(h.instruction?.addressed, true, 'addressed');
+    eq(h.instruction?.text, "Send a Slack message to Hugo asking him if he's done recording his project", 'their casing, their names');
+    eq(interpret('hey buddy, can you open my calendar please', P).instruction?.text, 'Open my calendar', 'a polite wrapper comes off');
+    eq(interpret('Okay, hey buddy, open Slack', P).instruction?.text, 'Open Slack', 'two words is enough when addressed');
+    eq(interpret('hey buddy, take over', P).intent?.kind, 'confirm', 'a go-ahead is still a go-ahead');
+    eq(interpret('hey buddy, stop', P).intent?.kind, 'cancel', 'and stop is still stop');
+    return h.instruction!.text;
+  });
+
+  await check('small talk and questions after "hey buddy" are not instructions', () => {
+    for (const t of ['Hey buddy, how’s it going?', 'hey buddy good boy', 'hey buddy, come here', 'hey buddy thank you so much', 'hey buddy what’s the weather like', 'hey buddy, did you see that game', 'hey buddy, are you there']) {
+      eq(interpret(t, P).instruction, null, JSON.stringify(t));
+      eq(heardAs(t), '- -', `${JSON.stringify(t)} wakes nothing either`);
+    }
+    return 'seven ways people talk to a buddy that is not a Mac';
+  });
+
+  await check('an unaddressed sentence is passed up as one, and the router decides', () => {
+    const h = interpret('send a slack message to hugo', P);
+    eq(h.instruction?.addressed, false, 'unaddressed');
+    eq(h.instruction?.plausible, true, 'and plausible on its own');
+    eq(interpret('ok sure', P).instruction?.plausible, false, 'two words unaddressed is too little');
+    eq(interpret('how the recording is going', P).instruction?.plausible, false, 'a question is not, on its own');
+    const now = 1_000_000;
+    const at = { running: false, dictationUntil: 0, continueUntil: 0, now };
+    const plain = { addressed: false, plausible: true };
+    eq(routeInstruction({ addressed: true, plausible: true }, at).action, 'instruct', 'addressed: always');
+    eq(routeInstruction(plain, at).action, 'ignore', 'unaddressed, outside a window: the room talking');
+    eq(routeInstruction(plain, { ...at, dictationUntil: now + VOICE_DICTATION_WINDOW_MS }).action, 'instruct', 'right after a bare "hey buddy": the instruction');
+    eq(routeInstruction({ addressed: false, plausible: false }, { ...at, dictationUntil: now + VOICE_DICTATION_WINDOW_MS }).action, 'ignore', 'but only if it reads like one');
+    eq(routeInstruction({ addressed: false, plausible: false }, { ...at, continueUntil: now + VOICE_CONTINUE_WINDOW_MS }).action, 'continue', 'the rest of a sentence need not — it is appended');
+    eq(routeInstruction({ addressed: true, plausible: true }, { ...at, running: true, dictationUntil: now + 9e9 }).action, 'ignore', 'never during a run');
+    return `${VOICE_DICTATION_WINDOW_MS / 1000} s after "hey buddy", ${VOICE_CONTINUE_WINDOW_MS / 1000} s to finish a sentence`;
+  });
+
+  await check('the apps an instruction names go on its allowlist', () => {
+    const running = [
+      { bundleId: 'com.tinyspeck.slackmacgap', appName: 'Slack' },
+      { bundleId: 'com.linear', appName: 'Linear' },
+      { bundleId: 'com.x', appName: 'X' },
+    ];
+    eq(appsMentioned('Send a Slack message to Hugo', running).join(','), 'com.tinyspeck.slackmacgap', 'Slack, by its name');
+    eq(appsMentioned('File the bug in Linear', running).join(','), 'com.linear', 'a running app, by the name macOS shows');
+    eq(appsMentioned('email Priya the deck', []).join(','), 'com.apple.mail', 'and the ways people say an app’s name that is not its name');
+    eq(appsMentioned('fix the x axis', running).length, 0, 'a one-letter app name matches nothing');
+    return 'Slack · Linear · Mail';
+  });
+
   // ═══ 2. The router: starting is narrow, stopping is addressed ═════════════
 
   await check('a go-ahead reaches the HUD only when it is armed, and recently', () => {
@@ -343,6 +396,25 @@ async function run() {
     ok(!/take over|go ahead/i.test(logged.replace(/"why":"[^"]*"/g, '')), 'not even the commands, only that one was heard');
     ok(logged.includes('heard the wake phrase'), 'the log does say that the wake phrase was heard');
     return 'the log records that buddy heard something, never what';
+  });
+
+  await check('an instruction becomes an event, and its words never reach the log', async () => {
+    settings.update({ voiceEnabled: true, paused: false });
+    const t = new ScriptedTransport();
+    t.raw = { ...t.raw, microphone: 'granted', speech: 'granted' };
+    const l = new VoiceListener({ settings: () => settings.get(), transport: t });
+    const got: { text: string; addressed: boolean }[] = [];
+    l.on('instruction', (i) => got.push(i));
+    await l.reconcile();
+    t.say('Hey buddy, send a Slack message to Hugo asking him about the zebra recording');
+    t.say('the quarterly numbers look terrible this time');
+    eq(got.length, 2, 'both passed up');
+    eq(got[0]!.addressed, true, 'the first addressed');
+    eq(got[1]!.addressed, false, 'the second not — main decides');
+    const logged = JSON.stringify(log.recent(500));
+    ok(!/zebra|Hugo|quarterly/.test(logged), 'neither one’s words are in the log');
+    ok(logged.includes('heard an instruction'), 'only that an addressed one was heard');
+    return 'the goal is shown back and run; the log keeps only a word count';
   });
 
   await check('buddyd giving up is reported once, not retried in a loop', async () => {

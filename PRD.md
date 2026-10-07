@@ -692,6 +692,7 @@ Each is an interface defined and used in v1 with a single implementation behind 
 | Later | v1 seam |
 |---|---|
 | Vector note search | **Built in M5.** `Embedder` (`memory/embed.ts`) with one implementation, a static Model2Vec model run in TypeScript; sqlite-vec as the accelerator; `hybridSearch` behind `NoteSearch`. See §4.2. |
+| Spoken instructions | **Built after M7.** "Hey buddy, <instruction>" (or "hey buddy", a pause, then the instruction) becomes the goal in the person's words, with named apps added to the allowlist; a 3 s visible countdown or a go-ahead starts it. Small talk and questions are filtered (`voice/match.ts`); routing is `routeInstruction` in `voice/route.ts`. See README, "Voice". |
 | Wake-word activation | **Built after M4.** `activate(source)` in `index.ts` is the seam, with the hotkey and "hey buddy" as its two triggers. `buddyd` transcribes on-device only (`Voice.swift`); `src/main/voice/` decides what was meant and where it goes; the HUD applies a stricter rule than Enter (`shared/voice.ts`). See README, "Voice". |
 | TTS / STT | `VoiceIO` interface, no-op impl. HUD already renders buddy's goal text as a discrete speakable unit. |
 | More providers | `Provider` interface with capability flags `{computerUse, vision, structuredOutput, cheapBulk}`. Anthropic is the only one with `computerUse: true`; the Operator hard-requires it and the UI says so. |

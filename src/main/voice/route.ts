@@ -28,6 +28,34 @@ export const VOICE_CONFIRM_WINDOW_MS = 30_000;
 
 export type VoiceAction = 'stop-run' | 'dismiss' | 'confirm' | 'ignore';
 
+/** After a bare "hey buddy", how long the next utterance is taken as the
+ *  instruction without saying the wake phrase again. Short, because what
+ *  makes it safe is that the person has just addressed buddy. */
+export const VOICE_DICTATION_WINDOW_MS = 8_000;
+/** After an instruction, how long a follow-on utterance is taken as the rest
+ *  of it — people pause mid-sentence, and buddyd cuts utterances at 0.9 s. */
+export const VOICE_CONTINUE_WINDOW_MS = 4_000;
+
+/**
+ * What a spoken instruction does.
+ *
+ * Addressed — "hey buddy, send a Slack message to Hugo…" — it opens the HUD
+ * with that as the goal. Unaddressed, only while buddy is listening for one:
+ * right after a bare "hey buddy", or straight after an instruction, as the
+ * rest of it. Never during a run: a new goal mid-run is a second agent on one
+ * keyboard, and "buddy, stop" is the way in.
+ */
+export function routeInstruction(
+  i: { addressed: boolean; plausible: boolean },
+  at: { running: boolean; dictationUntil: number; continueUntil: number; now: number },
+): { action: 'instruct' | 'continue' | 'ignore'; why: string } {
+  if (at.running) return { action: 'ignore', why: 'a run is in progress; say "buddy, stop" first' };
+  if (i.addressed) return { action: 'instruct', why: 'instruction heard' };
+  if (at.now < at.continueUntil) return { action: 'continue', why: 'the rest of the instruction' };
+  if (at.now < at.dictationUntil && i.plausible) return { action: 'instruct', why: 'dictated after "hey buddy"' };
+  return { action: 'ignore', why: 'not addressed to buddy' };
+}
+
 export function routeIntent(
   intent: VoiceIntent,
   at: { running: boolean; hudVisible: boolean; state: AppState; armedAt: number; now: number },
