@@ -2,18 +2,21 @@ import type Anthropic from '@anthropic-ai/sdk';
 import { EventEmitter } from 'node:events';
 import { log } from '../log.js';
 import { runs } from '../store/runs.js';
-import { BudgetTracker } from './budget.js';
+import { BudgetTracker, type Pricer } from './budget.js';
 import { Executor, type ExecOutcome, type Frame } from './executor.js';
+import type { CuaExecutor } from '../cua/executor.js';
 import { KILL_SWITCH_LABEL, killSwitches as globalKillSwitches, type KillSwitches } from './killswitch.js';
-import { buildHandsOffOpening, buildOpeningMessage, buildSystemPrompt } from './prompt.js';
+import { buildCuaOpening, buildHandsOffOpening, buildOpeningMessage, buildSystemPrompt } from './prompt.js';
 import {
   COMPUTER_TOOLSET_NAME,
   DESCRIBE_TOOL,
   FINISH_TOOL,
   FinishSchema,
+  buildCuaTools,
   buildHandsOffTools,
   buildTools,
   isComputerAction,
+  isCuaTool,
   isHandsOffTool,
 } from './tools.js';
 import { type ModelClient } from './client.js';
@@ -60,6 +63,12 @@ const MAX_TOKENS = 64_000;
 export const HALT_TEXT = 'Not executed: an earlier computer action in this turn failed.';
 
 const PRUNED_TEXT = '[screenshot pruned from context to save tokens — take a new one if you need to look again]';
+const PRUNED_TEXT_CUA = '[screenshot pruned from context to save tokens — call get_window_state if you need to look again]';
+
+/** How long after a foreground cua action the event tap's "human input" is
+ *  taken to be cua-driver's own. Foreground delivery is real HID input with no
+ *  `BUDDY_MAGIC` tag, so without this the log would say the person typed. */
+const CUA_FOREGROUND_ECHO_MS = 2_500;
 
 /** The AX tree is generous; a pathological window should not eat the turn. */
 const MAX_TREE_CHARS = 12_000;
@@ -87,7 +96,17 @@ export interface ResumeRunRequest extends StartRunRequest {
 
 export interface RunnerDeps {
   client: ModelClient;
-  executor?: Executor;
+  /** `Executor` is the toolset backend; `CuaExecutor` is cua-driver's. Which
+   *  one decides the tool surface, the opening and the result shapes — the
+   *  loop itself is the same. */
+  executor?: Executor | CuaExecutor;
+  /** The Operator's model id. Defaults to the Anthropic operator role's; the
+   *  cua backend can put another provider's here. */
+  model?: string;
+  /** What a turn cost, from its usage. Defaults to Opus 5's prices. */
+  price?: Pricer;
+  /** Every turn's cost, for the daily spend meter (PRD R5). */
+  onSpend?: (usd: number) => void;
   killSwitches?: KillSwitches;
   /** Injected in the checks so a "10 minute" budget can be blown in 10 ms. */
   now?: () => number;
@@ -104,7 +123,7 @@ export class AgentRunner extends EventEmitter {
   private steps: RunStep[] = [];
   private budgets: RunBudgets;
   private tracker: BudgetTracker;
-  private executor: Executor;
+  private executor: Executor | CuaExecutor;
   private kill: KillSwitches;
   private runId = 0;
   private turn = 0;
@@ -142,7 +161,20 @@ export class AgentRunner extends EventEmitter {
     this.executor = deps.executor ?? new Executor();
     this.kill = deps.killSwitches ?? globalKillSwitches;
     this.budgets = { ...DEFAULT_BUDGETS };
-    this.tracker = new BudgetTracker(this.budgets);
+    this.tracker = new BudgetTracker(this.budgets, this.deps.price);
+  }
+
+  /** cua-driver is executing: plain function tools, window snapshots, no
+   *  toolset. */
+  private get cua(): boolean {
+    return this.executor.kind === 'cua';
+  }
+
+  /** A `computer_toolset_20260801` member. Only on the toolset backend: cua
+   *  has its own `zoom`, `scroll`, `double_click` and `right_click`, which are
+   *  function tools and must never be answered as toolset members. */
+  private isComputer(name: string): boolean {
+    return !this.cua && !this.handsOff && isComputerAction(name);
   }
 
   // ── Public surface ────────────────────────────────────────────────────────
@@ -210,6 +242,10 @@ export class AgentRunner extends EventEmitter {
   /** The one path every kill switch converges on (PRD §7.3). */
   stop(via: KillSwitch = 'stop-button') {
     this.kill.fire(via);
+    // cua-driver may be mid-call — a long `type_text`, a foreground drag. The
+    // loop only notices a kill switch between blocks, so the call in flight is
+    // cancelled here; the run then halts at the next check, within this step.
+    if (this.executor.kind === 'cua') this.executor.cancelInFlight();
     // A run blocked on a confirm gate is not in the loop and will not notice a
     // kill switch on its own.
     if (this.gateResolver) this.resolveGate('stop');
@@ -223,7 +259,7 @@ export class AgentRunner extends EventEmitter {
     this.allowlist = req.allowlist;
     this.handsOff = !!req.handsOff;
     this.budgets = { ...DEFAULT_BUDGETS, ...(req.budgets ?? {}) };
-    this.tracker = new BudgetTracker(this.budgets);
+    this.tracker = new BudgetTracker(this.budgets, this.deps.price);
     this.startedAt = this.deps.now?.() ?? Date.now();
 
     this.runId = runs.create(this.goal, this.profile, this.handsOff);
@@ -253,7 +289,9 @@ export class AgentRunner extends EventEmitter {
     }
 
     try {
-      if (this.handsOff) {
+      if (this.cua) {
+        await this.openCua();
+      } else if (this.handsOff) {
         await this.openHandsOff();
         await this.loop(this.systemFor(null));
       } else {
@@ -271,6 +309,7 @@ export class AgentRunner extends EventEmitter {
   /** A normal run's opening: a screenshot of the display, the tree, and the
    *  loop. */
   private async openShared(): Promise<void> {
+    if (this.executor.kind !== 'toolset') throw new Error('openShared is the toolset backend’s opening');
     // The opening screenshot. The model's coordinate space does not exist
     // until a frame does, so nothing can be dispatched before this.
     const first = await this.executor.capture(this.runId, null);
@@ -316,7 +355,42 @@ export class AgentRunner extends EventEmitter {
     );
   }
 
+  /**
+   * The cua backend's opening: `get_window_state` on the frontmost window that
+   * is not buddy's — its picture and its elements — and the other windows on
+   * screen by pid and window id, so the first action can be aimed.
+   */
+  private async openCua(): Promise<void> {
+    this.note(
+      'cua',
+      'Working through cua-driver, in the background: input goes to the app’s window without bringing ' +
+        'it forward, so you can keep using the machine. Stop still works.',
+    );
+    const obs = await (this.executor as CuaExecutor).observeFrontmost(this.runId);
+    this.messages = [
+      {
+        role: 'user',
+        content: [
+          { type: 'text', text: buildCuaOpening(this.goal) },
+          ...(obs.frame ? [imageBlock(obs.frame)] : []),
+          { type: 'text', text: obs.text.slice(0, MAX_TREE_CHARS) },
+        ],
+      },
+    ];
+    this.recordStep({
+      tool: 'get_window_state',
+      input: { reason: 'opening observation' },
+      result: obs.frame ? `${obs.frame.width}x${obs.frame.height} window @ ${obs.frame.scale.toFixed(2)} px/pt` : obs.text.slice(0, 200),
+      framePath: obs.frame?.path ?? null,
+      isError: false,
+      verdict: null,
+      scale: obs.frame?.scale ?? null,
+    });
+    await this.loop(this.systemFor(null));
+  }
+
   private async runningAppsText(): Promise<string> {
+    if (this.executor.kind === 'cua') return '';
     try {
       return await this.executor.describeRunningApps();
     } catch (e) {
@@ -352,7 +426,7 @@ export class AgentRunner extends EventEmitter {
     this.allowlist = req.allowlist;
     this.handsOff = !!req.handsOff;
     this.budgets = { ...DEFAULT_BUDGETS, ...(req.budgets ?? {}) };
-    this.tracker = new BudgetTracker(this.budgets);
+    this.tracker = new BudgetTracker(this.budgets, this.deps.price);
     this.startedAt = this.deps.now?.() ?? Date.now();
     this.runId = req.runId;
     this.carriedSteps = req.priorSteps;
@@ -381,7 +455,7 @@ export class AgentRunner extends EventEmitter {
     try {
       // Hands-off resumes without photographing the display, for the reason
       // its opening does; the model looks at the app it needs instead.
-      const first = this.handsOff ? null : await this.executor.capture(this.runId, null);
+      const first = this.handsOff || this.executor.kind === 'cua' ? null : await this.executor.capture(this.runId, null);
       this.lastFrame = first;
       this.messages = req.messages.slice();
       this.appendResumeTurn(await this.resumeBlocks(req, first));
@@ -421,6 +495,7 @@ export class AgentRunner extends EventEmitter {
           screen: { width: frame?.width ?? 0, height: frame?.height ?? 0 },
           memory: this.memoryFor(),
           handsOff: this.handsOff,
+          backend: this.cua ? 'cua' : 'toolset',
         }),
         cache_control: { type: 'ephemeral' },
       },
@@ -445,6 +520,23 @@ export class AgentRunner extends EventEmitter {
     req: ResumeRunRequest,
     frame: Frame | null,
   ): Promise<Anthropic.Messages.ContentBlockParam[]> {
+    if (this.executor.kind === 'cua') {
+      const obs = await this.executor.observeFrontmost(this.runId);
+      return [
+        {
+          type: 'text',
+          text:
+            `You went to standby waiting for this to become true: "${req.condition}".\n` +
+            `buddy checked ${req.attempt} time${req.attempt === 1 ? '' : 's'} and has now decided it is: ` +
+            `${req.why}\n\n` +
+            'Everything above this message is your own work from before the wait — continue from it ' +
+            'rather than starting again. Every snapshot and element_token from before the wait is gone; ' +
+            'the frontmost window as it is now is below. Call get_window_state on any window before you act in it.',
+        },
+        ...(obs.frame ? [imageBlock(obs.frame)] : []),
+        { type: 'text', text: obs.text.slice(0, MAX_TREE_CHARS) },
+      ];
+    }
     if (!frame) {
       return [
         {
@@ -544,7 +636,7 @@ export class AgentRunner extends EventEmitter {
   }
 
   private async loop(system: Anthropic.Messages.TextBlockParam[]): Promise<void> {
-    const tools = this.handsOff ? buildHandsOffTools() : buildTools();
+    const tools = this.cua ? buildCuaTools() : this.handsOff ? buildHandsOffTools() : buildTools();
 
     for (;;) {
       this.turn++;
@@ -556,7 +648,7 @@ export class AgentRunner extends EventEmitter {
       this.applyRollingCacheBreakpoint();
 
       const res = await this.deps.client.create({
-        model: anthropicModel('operator'),
+        model: this.deps.model ?? anthropicModel('operator'),
         max_tokens: MAX_TOKENS,
         system,
         tools,
@@ -566,7 +658,8 @@ export class AgentRunner extends EventEmitter {
         // latency and is less stable. `high` is the answer.
         output_config: { effort: 'high' },
       });
-      this.tracker.addUsage(res.usage);
+      const spent = this.tracker.addUsage(res.usage);
+      if (spent > 0) this.deps.onSpend?.(spent);
       runs.progress(
         this.runId,
         this.tracker.usage().steps + this.carriedSteps,
@@ -677,7 +770,7 @@ export class AgentRunner extends EventEmitter {
     call: ToolUse,
   ): Promise<{ kind: 'ok'; block: Anthropic.Messages.ContentBlockParam; isError: boolean } | { kind: 'halted' }> {
     // ── The two custom tools ───────────────────────────────────────────────
-    if (call.name === DESCRIBE_TOOL) {
+    if (call.name === DESCRIBE_TOOL && this.executor.kind === 'toolset' && !this.handsOff) {
       try {
         const tree = await this.executor.describeFocusedWindow();
         const text = tree.slice(0, MAX_TREE_CHARS);
@@ -705,7 +798,8 @@ export class AgentRunner extends EventEmitter {
     // Each mode answers only its own tools: a hands-off run is never offered
     // the computer toolset, and a name from the other surface is a model
     // mistake to report rather than a capability to quietly honour.
-    if (this.handsOff ? !isHandsOffTool(call.name) : !isComputerAction(call.name)) {
+    const own = this.cua ? isCuaTool(call.name) : this.handsOff ? isHandsOffTool(call.name) : isComputerAction(call.name);
+    if (!own) {
       const msg = `Unknown tool: ${call.name}`;
       this.recordStep({ tool: call.name, input: call.input, result: msg, isError: true, verdict: null });
       return { kind: 'ok', block: this.toolResult(call, msg, true), isError: true };
@@ -814,10 +908,10 @@ export class AgentRunner extends EventEmitter {
       return { kind: 'ok', block: this.toolResult(call, result.text, true), isError: true };
     }
 
-    // Success. A hands-off `look` with a picture: the window and its tree, as a
-    // custom tool's result — no `toolset_name`, which belongs to the computer
-    // toolset's members alone.
-    if (result.frame && !isComputerAction(call.name)) {
+    // Success. A hands-off `look` or a cua `get_window_state`/`zoom` with a
+    // picture: the window and its tree, as a custom tool's result — no
+    // `toolset_name`, which belongs to the computer toolset's members alone.
+    if (result.frame && !this.isComputer(call.name)) {
       this.recordStep({
         tool: call.name,
         input: call.input,
@@ -833,10 +927,7 @@ export class AgentRunner extends EventEmitter {
         block: {
           type: 'tool_result',
           tool_use_id: call.id,
-          content: [
-            { type: 'image', source: { type: 'base64', media_type: 'image/png', data: result.frame.base64 } },
-            { type: 'text', text: result.text.slice(0, MAX_TREE_CHARS) },
-          ],
+          content: [imageBlock(result.frame), { type: 'text', text: result.text.slice(0, MAX_TREE_CHARS) }],
         },
       };
     }
@@ -874,11 +965,14 @@ export class AgentRunner extends EventEmitter {
 
     // A tree with no picture (a minimised window) is still a long text; the
     // log keeps a summary of it, the model gets it whole.
-    const logged = call.name === 'look' ? `${result.text.length} chars of tree, no picture` : result.text;
+    const logged =
+      call.name === 'look' || (this.cua && call.name === 'get_window_state')
+        ? `${result.text.length} chars of tree, no picture`
+        : result.text;
     this.recordStep({ tool: call.name, input: call.input, result: logged, isError: false, verdict: result.verdict, scale: this.lastFrame?.scale ?? null });
     return {
       kind: 'ok',
-      block: this.toolResult(call, call.name === 'look' ? result.text.slice(0, MAX_TREE_CHARS) : result.text, false),
+      block: this.toolResult(call, result.text.slice(0, MAX_TREE_CHARS), false),
       isError: false,
     };
   }
@@ -904,6 +998,7 @@ export class AgentRunner extends EventEmitter {
       lastFrame: this.lastFrame,
       ...(preApproved ? { preApproved: true } : {}),
     };
+    if (this.executor.kind === 'cua') return this.executor.execute(call.name, call.input, ctx);
     return this.handsOff && isHandsOffTool(call.name)
       ? this.executor.executeHands(call.name, call.input, ctx)
       : this.executor.execute(call.name, call.input, ctx);
@@ -917,7 +1012,11 @@ export class AgentRunner extends EventEmitter {
    * absence is a hard 400 that looks like a model failure (PRD §6.3).
    */
   private toolResult(call: ToolUse, text: string, isError: boolean): Anthropic.Messages.ContentBlockParam {
-    const toolsetName = call.toolsetName ?? (isComputerAction(call.name) ? COMPUTER_TOOLSET_NAME : null);
+    // The cua backend offers no toolset, so none of its results may carry the
+    // field — not even one echoed from a `tool_use` a gateway decorated.
+    const toolsetName = this.cua
+      ? null
+      : (call.toolsetName ?? (this.isComputer(call.name) ? COMPUTER_TOOLSET_NAME : null));
     return {
       type: 'tool_result',
       tool_use_id: call.id,
@@ -1014,6 +1113,15 @@ export class AgentRunner extends EventEmitter {
     // Hands-off is the mode in which the person *is* supposed to keep using
     // the machine. Counting it is still honest; narrating it as a takeover
     // would be the log misdescribing the run.
+    // The cua backend works in the background, so — like hands-off — the
+    // person is expected to keep using the machine. Measured: cua-driver's
+    // background clicks and keys never reach the session tap at all, and its
+    // foreground delivery does, untagged by BUDDY_MAGIC, so it reads exactly
+    // like a person typing. Those are discounted rather than counted.
+    if (this.executor.kind === 'cua') {
+      if (Date.now() - this.executor.lastForegroundAt >= CUA_FOREGROUND_ECHO_MS) this.humanInputCount++;
+      return;
+    }
     if (this.handsOff) {
       this.humanInputCount++;
       return;
@@ -1110,7 +1218,7 @@ export class AgentRunner extends EventEmitter {
     }
     const stale = images.slice(0, Math.max(0, images.length - KEEP_SCREENSHOTS));
     for (const { content, i } of stale) {
-      content[i] = { type: 'text', text: PRUNED_TEXT };
+      content[i] = { type: 'text', text: this.cua ? PRUNED_TEXT_CUA : PRUNED_TEXT };
     }
     if (stale.length) {
       log.debug('agent', 'pruned screenshots', { runId: this.runId, pruned: stale.length, turn: this.turn });
@@ -1145,6 +1253,7 @@ export class AgentRunner extends EventEmitter {
   // ── Bookkeeping ───────────────────────────────────────────────────────────
 
   private async treeBlockText(): Promise<string> {
+    if (this.executor.kind === 'cua') return '';
     try {
       const tree = await this.executor.describeFocusedWindow();
       return `Accessibility tree of the focused window (coordinates are element centres):\n\n${tree.slice(0, MAX_TREE_CHARS)}`;
@@ -1230,11 +1339,20 @@ export class AgentRunner extends EventEmitter {
   }
 }
 
+function imageBlock(frame: Frame): Anthropic.Messages.ImageBlockParam {
+  return { type: 'image', source: { type: 'base64', media_type: frame.mediaType ?? 'image/png', data: frame.base64 } };
+}
+
 /** Gate copy: names the exact action and the element it targets (PRD §8.1). */
 export function describeAction(action: string, input: Record<string, unknown>, verdict: GuardVerdict): string {
   switch (action) {
     case 'type':
+    case 'type_text':
       return `typing “${String(input.text ?? '').slice(0, 60)}” into ${verdict.target}`;
+    case 'press_key':
+      return `pressing ${[...(Array.isArray(input.modifiers) ? input.modifiers : []), input.key].join('+')} in ${verdict.target}`;
+    case 'hotkey':
+      return `pressing ${(Array.isArray(input.keys) ? input.keys : []).join('+')} in ${verdict.target}`;
     case 'key':
       return `pressing ${String(input.text ?? '')} in ${verdict.target}`;
     default:

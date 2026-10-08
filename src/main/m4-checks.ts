@@ -59,6 +59,7 @@ import {
   UNEXECUTED_TEXT,
 } from './agent/context.js';
 import { Executor, type Frame } from './agent/executor.js';
+import { costOf } from './agent/budget.js';
 import { COMPUTER_TOOLSET_NAME, FINISH_TOOL } from './agent/tools.js';
 import type { ModelClient, ModelResponse } from './agent/client.js';
 import type Anthropic from '@anthropic-ai/sdk';
@@ -1554,6 +1555,34 @@ async function run() {
     eq(meter.allow('operator'), true, 'nor a run');
     eq(meter.allow('qa'), true, 'nor a question the user asked');
     return 'a cost control that abandons a promise the user was given is an outage';
+  });
+
+  await check('a toolset run records its cost on the daily meter, and the cap does not stop it', async () => {
+    wipe();
+    // A cap the first turn blows straight through: the run must still finish,
+    // and observation must be what stops.
+    const meter = new SpendMeter(0.001);
+    const operator = new Operator();
+    const opModel = new ScriptedOperatorModel(() => finishTurn('done', 'done'));
+    operator.setClientFactory(() => opModel);
+    operator.setExecutorFactory(() => new FakeExecutor());
+    operator.setSpendSink((usd) => meter.record('operator', usd));
+    // The meter is per day in `kv`, shared with the checks above; compare
+    // against what was already there.
+    const before = meter.report();
+    const view = await operator.start({ goal: 'g', profile: 'attended', allowlist: ALLOWLIST });
+
+    eq(view.status, 'done', 'the run finished despite the cap');
+    const usage = { input_tokens: 2_000, output_tokens: 200, cache_read_input_tokens: 1_500 };
+    const report = meter.report();
+    const added = report.byTier.operator - before.byTier.operator;
+    near(added, costOf(usage), 1e-9, 'the turn is on the meter under `operator`');
+    near(added, view.usage.costUsd, 1e-9, 'and it is what the run’s own budget counted');
+    eq(report.calls - before.calls, 1, 'one model call, one record');
+    ok(meter.capped(), 'the cap is reached');
+    eq(meter.allow('t2'), false, 'so observing stops');
+    eq(meter.allow('operator'), true, 'and the next run is still allowed');
+    return `$${added.toFixed(5)} under "operator", run done, T2 paused`;
   });
 
   await check('deleting a run really does stop buddy waiting for it', () => {

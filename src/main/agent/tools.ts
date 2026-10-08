@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import type Anthropic from '@anthropic-ai/sdk';
+import cuaSchemas from '../cua/schemas.json';
 
 /// The tool surface (PRD §6.3).
 ///
@@ -264,6 +265,35 @@ export function buildHandsOffTools(): Anthropic.Messages.ToolUnion[] {
     },
     // `finish` is the same tool in both modes, and it stays last: the cache
     // breakpoint sits on it.
+    buildTools().find((t) => 'name' in t && t.name === FINISH_TOOL)!,
+  ];
+}
+
+// ── The cua backend ──────────────────────────────────────────────────────────
+
+/// cua-driver's tools, offered as ordinary function tools — no toolset entry,
+/// so any Messages-API endpoint can carry them (the LiteLLM gateway rejects a
+/// `name` it injects into a toolset entry; it passes function tools through),
+/// and so can a non-Claude model behind the OpenAI-compatible adapter.
+///
+/// The schemas are cua-driver's own, from its MCP `tools/list`
+/// (`spike/cua-driver/tools.json` → `npm run cua:schemas` → `cua/schemas.json`).
+/// The curated subset and what was taken out of each is decided there, with
+/// the reasons, so this file only orders and appends.
+
+export const CUA_TOOLS = cuaSchemas.tools.map((t) => t.name) as readonly string[];
+
+export const isCuaTool = (name: string): boolean => CUA_TOOLS.includes(name);
+
+/** Same order every turn, `finish` last with the cache breakpoint on it
+ *  (PRD §6.5) — exactly the rule `buildTools` keeps. */
+export function buildCuaTools(): Anthropic.Messages.ToolUnion[] {
+  return [
+    ...cuaSchemas.tools.map((t) => ({
+      name: t.name,
+      description: t.description,
+      input_schema: t.input_schema as Anthropic.Messages.Tool.InputSchema,
+    })),
     buildTools().find((t) => 'name' in t && t.name === FINISH_TOOL)!,
   ];
 }

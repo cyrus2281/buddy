@@ -18,6 +18,8 @@ export default defineConfig({
           'm2-checks': path.resolve('src/main/m2-checks.ts'),
           'm3-checks': path.resolve('src/main/m3-checks.ts'),
           'm4-checks': path.resolve('src/main/m4-checks.ts'),
+          // The cua backend spike (spike/cua-driver/FINDINGS.md).
+          'm5-checks': path.resolve('src/main/m5-checks.ts'),
           'voice-checks': path.resolve('src/main/voice-checks.ts'),
           'memory-checks': path.resolve('src/main/memory-checks.ts'),
           'hands-checks': path.resolve('src/main/hands-checks.ts'),
@@ -26,6 +28,8 @@ export default defineConfig({
           'speech-checks': path.resolve('src/main/speech-checks.ts'),
           // The one thing in the repo that talks to the live API (PRD §10, M4).
           'live-run': path.resolve('src/main/live-run.ts'),
+          // The cua spike's comparison runs (spike/cua-driver/FINDINGS.md).
+          'live-cua': path.resolve('src/main/live-cua.ts'),
           'live-standby': path.resolve('src/main/live-standby.ts'),
           'live-learn': path.resolve('src/main/live-learn.ts'),
           // The fixture recorder needs a real Chromium renderer to screenshot,

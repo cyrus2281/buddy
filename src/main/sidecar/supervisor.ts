@@ -345,8 +345,10 @@ export class Sidecar extends EventEmitter {
   axAct = (params: { ref: number; action: string; value?: string; restoreFocus?: boolean }) =>
     this.require().call<AxActResult>('ax_act', params, 15_000);
   /** `target_info` for an element or a named app rather than a screen point —
-   *  what the guardrail classifies a hands-off action against. */
-  axTarget = (params: { ref?: number; bundleId?: string; pid?: number }) =>
+   *  what the guardrail classifies a hands-off action against. With `pid` and
+   *  `x`,`y`, the element is *that app's* hit test at the point, which is right
+   *  for a window behind others where the system-wide one is not (cua backend). */
+  axTarget = (params: { ref?: number; bundleId?: string; pid?: number; x?: number; y?: number }) =>
     this.require().call<TargetInfo>('ax_target', params, 8_000);
   /** Keystrokes posted to one process, not to whatever has focus. */
   keysToApp = (params: { bundleId?: string; pid?: number; key?: string; text?: string }) =>

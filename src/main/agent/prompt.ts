@@ -39,6 +39,9 @@ export interface PromptContext {
   /** Hands-off: the tool surface is `look`/`act`/`set_value`/`send_keys`/
    *  `open`, and "How to work" says so instead of talking about pixels. */
   handsOff?: boolean;
+  /** `cua`: cua-driver's tools — window snapshots and element tokens, input
+   *  delivered in the background — instead of the computer toolset. */
+  backend?: 'toolset' | 'cua';
 }
 
 /** "How to work", for a run that shares the pointer and keyboard. */
@@ -93,6 +96,60 @@ function handsOffHowTo(): string[] {
   ];
 }
 
+/** Bumped when `cuaHowTo` changes, so live measurements say which prompt they
+ *  measured. v1 → v2 after the first gateway batch (spike/cua-driver/FINDINGS.md):
+ *  v1 told the model to re-snapshot after every action (it did, doubling the
+ *  steps) and said nothing about text cursors (every run typed in the wrong
+ *  place, then looped on ⌘Z). */
+export const CUA_PROMPT_VERSION = 'cua-v2';
+
+/** "How to work", on cua-driver's tools. Element tokens over pixels, batches
+ *  from one snapshot, where typing actually lands, and the
+ *  background-then-foreground ladder. */
+function cuaHowTo(): string[] {
+  return [
+    'You drive apps through **cua-driver**. Input goes to a window by its pid and window id, in ' +
+      'the background by default: the app is not brought to the front, the person’s pointer does ' +
+      'not move, and they may keep working while you do.',
+    '',
+    '- **Snapshot, then act.** `get_window_state(pid, window_id)` returns a screenshot of that ' +
+      'window and its elements, each with an index [N]. The element_token for [N] is ' +
+      '`<snapshot_id>:N`, and the result names the snapshot. Get pid and window ids from ' +
+      '`list_windows` or `list_apps`; `launch_app` (by bundle id) starts an app in the background.',
+    '- **Prefer element tokens to pixels.** `click`, `type_text`, `press_key` and the rest take an ' +
+      '`element_token` — exact, and it works on a window that is behind others. Use `x`,`y` only ' +
+      'for something that is not in the element list (a canvas, a custom-drawn control), read ' +
+      'straight off that window’s latest screenshot. Always pass `pid`.',
+    '- **One snapshot, then a batch.** A token stays valid until the next `get_window_state` of ' +
+      'its window — acting does not stale it. So take one snapshot, do everything you can from it ' +
+      'in one batch (every Calculator key of a sum, say), then snapshot once to check the result. ' +
+      'A snapshot after every click doubles the steps and the cost.',
+    '- **You can only act on what a snapshot showed you.** `query`, `max_elements` and ' +
+      '`max_depth` shrink a big tree; an element they leave out cannot be targeted until a ' +
+      'snapshot includes it.',
+    '- **Text goes where the text cursor is.** A background click does not move the cursor in a ' +
+      'document or text area, so `type_text` into a text area’s token inserts wherever the cursor ' +
+      'already was. To type at a particular place, move the cursor first: `press_key` with the text ' +
+      'area’s element_token focuses it, then keys like cmd+down (end of document), cmd+up, the ' +
+      'arrows, or cmd+right (end of line) put the cursor where you want it; or click there with ' +
+      '`delivery_mode: "foreground"`. Then snapshot and read the field’s value before going on.',
+    '- **Undo one step at a time.** Never press ⌘Z twice without a snapshot in between that shows ' +
+      'what the first one did. If the text is wrong, read the field’s value and fix exactly that.',
+    '- **Read the effect.** Input results say `effect`. `unverifiable` is normal for a press — ' +
+      'confirm it from a fresh snapshot. `suspected_noop` means it probably did nothing: snapshot, ' +
+      'and if it really did not land, repeat the same action with `delivery_mode: "foreground"`. ' +
+      'Foreground briefly brings the window forward and is the last resort, not the first try; ' +
+      '`drag` always needs it.',
+    '- **Typing.** `type_text` inserts text into the element you name (or the focused one). Special ' +
+      'keys go through `press_key` (Return, Escape, arrows) and shortcuts through `hotkey`. Return ' +
+      'in a chat app sends the message.',
+    '- **Batch** what you are sure of; a failure skips the rest of the batch. `zoom` is for reading ' +
+      'small text, never for click coordinates.',
+    '- **When you are stuck**, say so with `finish` rather than trying variations. Three failed ' +
+      'attempts at the same thing means the approach is wrong, not that it needs a fourth.',
+  ];
+}
+
 export function buildSystemPrompt(c: PromptContext): string {
   const leashless = c.profile === 'leashless';
 
@@ -142,7 +199,7 @@ export function buildSystemPrompt(c: PromptContext): string {
     '',
     '## How to work',
     '',
-    ...(c.handsOff ? handsOffHowTo() : sharedHandsHowTo(c)),
+    ...(c.backend === 'cua' ? cuaHowTo() : c.handsOff ? handsOffHowTo() : sharedHandsHowTo(c)),
     '',
     ...(c.memory?.trim() ? [c.memory.trim(), ''] : []),
     '## Ending the run',
@@ -224,5 +281,15 @@ export function buildOpeningMessage(goal: string): string {
     `Begin. The goal is:\n\n${goal}\n\n` +
     'Start by taking a screenshot and calling `describe_focused_window` so you can see where ' +
     'things actually are before you touch anything.'
+  );
+}
+
+/** The cua backend's opening turn: the goal, then the frontmost window's
+ *  snapshot and the other windows on screen, which the runner appends. */
+export function buildCuaOpening(goal: string): string {
+  return (
+    `Begin. The goal is:\n\n${goal}\n\n` +
+    'Below is get_window_state of the frontmost window that is not buddy’s, and the other windows ' +
+    'on screen by pid and window id. Snapshot the window you need before you act in it.'
   );
 }

@@ -12,9 +12,11 @@ import {
   type StructuredResult,
 } from './notes/model.js';
 import { DEFAULT_SETTINGS } from '../shared/types.js';
+import { CUA_DRIVER_MISSING, cuaBinaryPath } from './cua/driver.js';
 import type {
   AnthropicRole,
   OperatorAvailability,
+  OperatorBackend,
   ProviderCapabilities,
   ProviderId,
   ProviderProbe,
@@ -40,15 +42,31 @@ import type {
 /// Observation and Q&A are a different matter: both are "look at some pixels
 /// and some text, return structured JSON", which every vision model does. Those
 /// are switchable, and switching them is the point of the seam.
+///
+/// **The cua backend changes the Operator's requirement, not the rule.** With
+/// `operatorBackend: 'cua'` the machine is driven by cua-driver and the model
+/// sees ordinary function tools with image results — `functionTools` plus
+/// `vision`, which all three providers have. Claude-only is still exactly true
+/// of the toolset, and the toolset is still the default. Either way there is
+/// one sentence with one author: `operatorAvailability()` returns what
+/// `orchestrator.start()` throws, per backend.
 
 export const CAPABILITIES: Record<ProviderId, ProviderCapabilities> = {
-  anthropic: { computerUse: true, vision: true, structuredOutput: true, cheapBulk: true },
+  anthropic: { computerUse: true, functionTools: true, vision: true, structuredOutput: true, cheapBulk: true },
   // Vision and JSON-schema output, no computer toolset. Not a temporary state.
-  openai: { computerUse: false, vision: true, structuredOutput: true, cheapBulk: true },
+  // Function tools, so it can drive the machine through cua-driver.
+  openai: { computerUse: false, functionTools: true, vision: true, structuredOutput: true, cheapBulk: true },
   // Depends entirely on the model pulled; the UI says a vision model is
-  // required rather than discovering it as a blank observation at 3pm.
-  local: { computerUse: false, vision: true, structuredOutput: true, cheapBulk: true },
+  // required rather than discovering it as a blank observation at 3pm. The
+  // same goes for tool calling when it is the Operator.
+  local: { computerUse: false, functionTools: true, vision: true, structuredOutput: true, cheapBulk: true },
 };
+
+/** Can this provider be the Operator on this backend? */
+export function canOperate(id: ProviderId, backend: OperatorBackend): boolean {
+  const c = CAPABILITIES[id];
+  return backend === 'toolset' ? c.computerUse : c.functionTools && c.vision;
+}
 
 const LABEL: Record<ProviderId, string> = {
   anthropic: 'Anthropic',
@@ -66,6 +84,21 @@ const NOTE: Record<ProviderId, string> = {
   local:
     'Observation and Q&A only, through an OpenAI-compatible endpoint. Needs a vision model — a ' +
     'text-only one will return nothing useful about a screenshot. Nothing leaves the machine.',
+};
+
+/** The same notes, for the cua backend — where driving the machine is a
+ *  function-tool job any of the three can do. */
+const NOTE_CUA: Record<ProviderId, string> = {
+  anthropic:
+    'Drives the machine through cua-driver when chosen as the Operator below, over any Messages-API ' +
+    'endpoint — a gateway included. Observation and Q&A as before.',
+  openai:
+    'Can drive the machine through cua-driver when chosen as the Operator below: plain function ' +
+    'tools, screenshots as image parts. Observation and Q&A as before.',
+  local:
+    'Can drive the machine through cua-driver when chosen as the Operator below — the model must do ' +
+    'tool calling and vision, and needs a context window far beyond Ollama’s default. Nothing leaves ' +
+    'the machine.',
 };
 
 /**
@@ -112,7 +145,7 @@ export function providerStatuses(): ProviderStatus[] {
     label: LABEL[id],
     capabilities: CAPABILITIES[id],
     configured: isConfigured(id),
-    note: NOTE[id],
+    note: settings.get().operatorBackend === 'cua' ? NOTE_CUA[id] : NOTE[id],
     models: modelsFor(id),
   }));
 }
@@ -127,18 +160,41 @@ export function providerStatuses(): ProviderStatus[] {
  * one author.
  */
 export function operatorAvailability(): OperatorAvailability {
-  if (secrets.has('anthropic')) return { available: true, reason: null };
+  const reason = operatorUnavailableReason();
+  return reason ? { available: false, reason } : { available: true, reason: null };
+}
+
+/** The sentence, or null. Shared by `operatorAvailability()` and
+ *  `cuaOperatorSetup()`, which throws it — so the two cannot disagree. */
+export function operatorUnavailableReason(): string | null {
   const s = settings.get();
+  if (s.operatorBackend === 'cua') {
+    if (!cuaBinaryPath()) return CUA_DRIVER_MISSING;
+    if (!isConfigured(s.operatorProvider)) return NO_OPERATOR_PROVIDER[s.operatorProvider];
+    return null;
+  }
+  if (secrets.has('anthropic')) return null;
   const other =
     s.observerProvider !== 'anthropic' || s.qaProvider !== 'anthropic'
       ? ` ${LABEL[s.observerProvider === 'anthropic' ? s.qaProvider : s.observerProvider]} is ` +
         'configured for observing and questions, and it still cannot do this one.'
       : '';
-  return {
-    available: false,
-    reason: NO_ANTHROPIC_KEY + other,
-  };
+  return NO_ANTHROPIC_KEY + other;
 }
+
+/** The cua backend's version of NO_ANTHROPIC_KEY: whichever provider is set to
+ *  drive has nothing to drive with. */
+export const NO_OPERATOR_PROVIDER: Record<ProviderId, string> = {
+  anthropic:
+    'No Anthropic API key. The Operator is set to run Claude through cua-driver; add a key in ' +
+    'Settings, or choose another provider for the Operator.',
+  openai:
+    'No OpenAI API key. The Operator is set to run on OpenAI through cua-driver; add a key in ' +
+    'Settings, or choose another provider for the Operator.',
+  local:
+    'No local endpoint and model. The Operator is set to run on a local model through cua-driver; ' +
+    'set both in Settings, or choose another provider for the Operator.',
+};
 
 /** The one sentence, in one place. `orchestrator.start()` imports it. */
 export const NO_ANTHROPIC_KEY =

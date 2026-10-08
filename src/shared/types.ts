@@ -259,7 +259,23 @@ export interface Settings {
   /** Keep score of how often you take buddy's read, per kind of task, and say
    *  so when it matters. Rides on what M5 already records. */
   shadowTrust: boolean;
+
+  // The Operator's backend (spike: spike/cua-driver/FINDINGS.md).
+  /** How the Operator reaches the machine. `toolset` is Anthropic's
+   *  `computer_toolset_20260801` executed by buddyd — the shipping path, and
+   *  the default. `cua` is cua-driver's tools offered to the model as ordinary
+   *  function tools and executed by cua-driver, in the background: any
+   *  Messages-API endpoint can carry it (a gateway that rejects toolset
+   *  entries included), and so can a non-Claude model. */
+  operatorBackend: OperatorBackend;
+  /** Which provider drives the machine. Anything other than `anthropic` only
+   *  applies under `operatorBackend: 'cua'`; the toolset is Claude's own. The
+   *  model id is that provider's: `anthropicModels.operator`, `openaiModel`,
+   *  or `localModel`. */
+  operatorProvider: ProviderId;
 }
+
+export type OperatorBackend = 'toolset' | 'cua';
 
 /** The six things buddy asks Claude to do, each on its own model.
  *
@@ -373,6 +389,8 @@ export const DEFAULT_SETTINGS: Settings = {
   rememberWorkspace: true,
   offerRestore: true,
   shadowTrust: true,
+  operatorBackend: 'toolset',
+  operatorProvider: 'anthropic',
   voiceConfirmPhrases: [
     'take over',
     'take it over',
@@ -794,6 +812,10 @@ export interface ProviderCapabilities {
   /** `computer_toolset_20260801` and an equivalent. Anthropic only, and this is
    *  not a gap waiting to be filled — there is no equivalent elsewhere. */
   computerUse: boolean;
+  /** Ordinary function tools with image tool results, which is all the cua
+   *  backend needs from a model. True for every provider here; for a local
+   *  runtime it depends on the model pulled, which the note says. */
+  functionTools: boolean;
   /** Images in, which T2, goal inference, and the wake check all require. */
   vision: boolean;
   /** Schema-constrained output. Every tier buddy has depends on it. */

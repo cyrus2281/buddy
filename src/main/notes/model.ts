@@ -20,9 +20,13 @@ import type { UsageLike } from '../agent/budget.js';
  *  billing, so they are allowed to be approximate — but they are wrong in a
  *  visible way if a model's price changes, which is why the rate lives beside
  *  the model id rather than being spread through the call sites. */
-export const MODEL_PRICES: Record<string, { input: number; output: number }> = {
+export const MODEL_PRICES: Record<string, { input: number; output: number; cacheRead?: number }> = {
   'claude-haiku-4-5': { input: 1 / 1_000_000, output: 5 / 1_000_000 },
   'claude-sonnet-5': { input: 2 / 1_000_000, output: 10 / 1_000_000 },
+  // Before `claude-opus-5`: the containment match below takes the first id a
+  // gateway alias contains, and `…claude-opus-5-5…` contains both. Cache reads
+  // are 0.05× input on this model, not the usual 0.1×.
+  'claude-opus-5-5': { input: 4 / 1_000_000, output: 20 / 1_000_000, cacheRead: 0.2 / 1_000_000 },
   'claude-opus-5': { input: 5 / 1_000_000, output: 25 / 1_000_000 },
 };
 
@@ -79,7 +83,7 @@ const unpriced = new Set<string>();
  *  at Sonnet 5's price, and pricing it at zero would not just under-report the
  *  meter — `dailyCapUsd` is a safety control (PRD R5), and a cap that never
  *  trips because every call costs $0 is a cap that is off. */
-function priceOf(model: string): { input: number; output: number } | undefined {
+export function priceOf(model: string): { input: number; output: number; cacheRead?: number } | undefined {
   const exact = MODEL_PRICES[model];
   if (exact) return exact;
   for (const [id, price] of Object.entries(MODEL_PRICES)) {
@@ -104,7 +108,7 @@ export function costOfCall(model: string, usage: UsageLike): number {
     (usage.input_tokens ?? 0) * p.input +
     (usage.output_tokens ?? 0) * p.output +
     (usage.cache_creation_input_tokens ?? 0) * p.input * 1.25 +
-    (usage.cache_read_input_tokens ?? 0) * p.input * 0.1
+    (usage.cache_read_input_tokens ?? 0) * (p.cacheRead ?? p.input * 0.1)
   );
 }
 
