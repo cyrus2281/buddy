@@ -164,7 +164,24 @@ provider takes a base URL and per-role model ids, so a gateway works too.
 
 **Operator backend.** The default is Claude's computer-use toolset. An
 experimental `cua-driver` backend runs the Operator on plain function tools, so
-it can work through gateways or non-Claude models.
+it can work through gateways that reject the toolset, or with non-Claude
+models. Pick it in Settings › Providers › Operator backend. It is a spike: it
+gets through a gateway, but it can't yet place typed text at an exact spot in a
+document. See [`spike/cua-driver/FINDINGS.md`](spike/cua-driver/FINDINGS.md).
+
+The cua backend needs `cua-driver` installed (pinned, telemetry off) and
+granted its own permissions:
+
+```bash
+CUA_DRIVER_RS_VERSION=0.34.0 CUA_DRIVER_RS_TELEMETRY_ENABLED=0 /bin/bash -c "$(curl -fsSL https://cua.ai/driver/install.sh)"
+cua-driver telemetry disable
+cua-driver permissions grant
+```
+
+**Using a gateway.** Set the Anthropic base URL and a model id per role to what
+the gateway serves. If the Operator fails with a 400, the gateway is probably
+rejecting the computer-use toolset. Point the base URL at the gateway's
+Anthropic pass-through route, if it has one, or switch to the cua backend.
 
 ---
 
@@ -182,6 +199,8 @@ it can work through gateways or non-Claude models.
 | `npm run check:hands` · `check:island` · `check:restore` | hands-off, island/ghost, Where was I? and shadow mode |
 | `npm run eval:goal` | goal-inference eval (needs an API key) |
 | `npm run live:run` · `live:standby` · `live:learn` · `live:cua` | end-to-end runs against live models |
+| `npm run live:cua -- --config smoke` | the real cua-driver and guardrails, no model calls |
+| `npm run build:sidecar` | rebuild `buddyd` alone (after changing `sidecar/`) |
 | `npm run fetch:model` | fetch and verify the embedding model |
 | `npm run rebuild` | rebuild `better-sqlite3` for Electron |
 
