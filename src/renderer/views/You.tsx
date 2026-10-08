@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import { TrustPanel } from '../components/trust.js';
 import { AnimatePresence, motion } from 'framer-motion';
 import { api } from '../useBuddy.js';
 import { Button, Card, Stat, spring, useMotionSafe } from '../components/primitives.js';
@@ -166,6 +167,8 @@ export function You({ version }: { version: number }) {
       <Week rhythm={data.rhythm} />
 
       <Corrections corrections={data.corrections} runs={data.runs} />
+
+      <TrustPanel version={version} />
 
       <section className="flex flex-col gap-3">
         <h3 className="text-[13px] font-medium text-fog-100">The index</h3>

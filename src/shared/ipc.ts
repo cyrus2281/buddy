@@ -43,6 +43,8 @@ import type {
 } from './types.js';
 
 import type { IslandNotice, IslandPlacement } from './island.js';
+import type { RestoreItem, RestorePlan } from './workspace.js';
+import type { TrustCluster } from './trust.js';
 
 /// The IPC contract, written once and imported by main, preload, and renderer.
 /// Channel names live here as constants so a typo is a compile error rather
@@ -126,6 +128,12 @@ export const CH = {
   forgetLearned: 'buddy:forgetLearned',
   rebuildMemoryIndex: 'buddy:rebuildMemoryIndex',
 
+  // "Where was I?" and shadow mode
+  getRestorePlan: 'buddy:getRestorePlan',
+  restoreWorkspace: 'buddy:restoreWorkspace',
+  forgetWorkspace: 'buddy:forgetWorkspace',
+  getTrust: 'buddy:getTrust',
+
   // The island and the ghost cursor
   setIslandInteractive: 'buddy:setIslandInteractive',
   getIsland: 'buddy:getIsland',
@@ -159,6 +167,7 @@ export const CH = {
   onVoice: 'buddy:voice',
   onVoiceCommand: 'buddy:voiceCommand',
   onMemoryChanged: 'buddy:memoryChanged',
+  onWorkspace: 'buddy:workspace',
   onIntent: 'buddy:intent',
   onIslandPlacement: 'buddy:islandPlacement',
   onIslandNotice: 'buddy:islandNotice',
@@ -331,6 +340,16 @@ export interface BuddyApi {
   hudResize(height: number): Promise<void>;
   /** The island, as the pointer enters or leaves the shape it draws: it is
    *  click-through everywhere else. */
+  /** What buddy would open to put your last arrangement back, against what is
+   *  open now. */
+  getRestorePlan(): Promise<RestorePlan>;
+  /** Open them. Only the items that are not already there. */
+  restoreWorkspace(items: RestoreItem[]): Promise<{ opened: number; failed: { label: string; why: string }[] }>;
+  /** Forget every arrangement buddy has recorded. */
+  forgetWorkspace(): Promise<void>;
+  /** Shadow mode: every kind of task buddy has done, and how often you took
+   *  its read. */
+  getTrust(): Promise<TrustCluster[]>;
   setIslandInteractive(on: boolean): Promise<void>;
   /** Where the island is and any notice it is holding, pulled on mount: a push
    *  sent at `did-finish-load` can arrive before React has subscribed. */
@@ -340,6 +359,9 @@ export interface BuddyApi {
   showHud(): Promise<void>;
   /** A notice's button, by name. */
   islandAction(action: string): Promise<void>;
+  /** A new snapshot, a restore, or a forget: anything showing the arrangement
+   *  should re-read it. */
+  onWorkspace(fn: () => void): () => void;
   onIntent(fn: (i: GhostIntent) => void): () => void;
   onIslandPlacement(fn: (p: IslandPlacement) => void): () => void;
   onIslandNotice(fn: (n: IslandNotice | null) => void): () => void;

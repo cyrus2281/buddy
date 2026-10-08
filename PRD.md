@@ -625,6 +625,13 @@ Frameless, always-on-top, vibrant, centered, ~560 px wide. Springs in on the hot
 The HUD's collapsed pill moved to the notch. See README, "The island and the
 ghost cursor", and `shared/island.ts` for the state priority.
 
+### 8.1.2 Earned trust
+
+What a good record unlocks is one offer, and the rule that withholds it is in
+README, "Shadow mode". Nothing here changes §7.1: the profile is set by the
+person before the loop starts, `leashless` is never suggested, and a run still
+cannot escalate itself.
+
 ### 8.2 Home
 Status line ("watching for 3 h 20 m · 412 frames · 18 kept"), today's recap, active task cards, a large Activate button, and a single input that accepts either a question ("what did I do this morning?") or a direct instruction.
 
@@ -961,6 +968,30 @@ ever appears in what the model sees.
 
 **Status: built and verified** — `npm run check:island`, 15 checks plus an
 optional photographed tour. See README, "The island and the ghost cursor".
+
+### M8 — Where was I?, and shadow mode
+
+**Where was I?** A workspace snapshot every 30 s from one `app_windows` call —
+apps, window titles, `AXDocument` files, the focused browser page — filtered
+through §5.1's exclusion list on the way in, kept twenty deep by count with an
+unchanged arrangement updating in place rather than taking a slot · a restore
+plan diffed against what is open now, documents and pages preferred over the
+apps that hold them · opened with `activates = false`, nothing ever closed · an
+island offer on return after 20 minutes, the full list on Home, one Settings
+button to forget all of it.
+
+**Shadow mode.** The accept rate of buddy's own readings, grouped by the apps a
+task touched, read from the episodes M5 already writes and the verdicts §8.5
+already keeps · stated in the HUD both ways, including when the record is poor ·
+one offer, `unattended`, withheld from any task that has ever stopped at a
+confirm gate, and never offered for `leashless`.
+**Exit:** coming back to the machine costs one button, and buddy can say how
+often it has been right about a kind of task before it is asked to act on one.
+
+**Status: built and verified** — `npm run check:restore`, 20 checks; the score
+is computed from runs written through the real `runs`, `run_steps` and
+`episodes` stores, and the last two checks read the real `buddyd`. See README,
+"Where was I?" and "Shadow mode".
 
 ### Honest read on the timeline
 

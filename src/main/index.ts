@@ -21,6 +21,9 @@ import { VoiceListener } from './voice/listener.js';
 import { routeInstruction, routeIntent, VOICE_CONTINUE_WINDOW_MS, VOICE_DICTATION_WINDOW_MS } from './voice/route.js';
 import { appsMentioned } from './voice/apps.js';
 import { island } from './island.js';
+import { appNames } from './shadow/trust.js';
+import { WorkspaceTracker } from './workspace/tracker.js';
+import { describePlan } from '../shared/workspace.js';
 import { CH } from '../shared/ipc.js';
 import type { AppState, VoiceIntent } from '../shared/types.js';
 
@@ -34,6 +37,7 @@ let engine: NotesEngine;
 let activation: Activation;
 let standby: StandbyManager;
 let voice: VoiceListener;
+let workspace: WorkspaceTracker;
 /** When the HUD was last armed, by either trigger. A spoken go-ahead is only
  *  honoured for a while after it (see `voice/route.ts`). */
 let armedAt = 0;
@@ -87,6 +91,7 @@ function updateTray() {
         : []),
       { type: 'separator' },
       { label: 'Open buddy', click: () => createHome() },
+      { label: 'Where was I?', click: () => createHome() },
       { label: 'Show HUD', accelerator: settings.get().hotkey, click: () => toggleHud() },
       // The microphone is a bigger thing to leave on than the screen recorder,
       // so turning it off is one click from anywhere, like Pause.
@@ -125,6 +130,44 @@ function updateTray() {
       { label: 'Quit buddy', click: () => app.quit() },
     ]),
   );
+}
+
+/** The tracker runs exactly while buddy is observing and the setting is on:
+ *  a paused buddy stops sensing, and a snapshot is a sensor reading. */
+function syncWorkspace() {
+  if (settings.get().rememberWorkspace && scheduler.isRunning()) workspace.start();
+  else workspace.stop();
+}
+
+/**
+ * Coming back to the machine: offer to put the arrangement back.
+ *
+ * Only when there is something missing to put back, only when the person has
+ * been away long enough for it to have gone (a screen locked for two minutes
+ * is not an interruption worth a notice), and only through the island — which
+ * never takes focus, so an offer cannot land under the hands of someone who
+ * came back to type.
+ */
+async function offerRestore(why: 'unlock' | 'wake' | 'launch') {
+  if (!settings.get().offerRestore || !settings.get().rememberWorkspace) return;
+  if (operator.isRunning()) return;
+  try {
+    const plan = await workspace.plan();
+    const missing = plan.items.filter((i) => !i.present);
+    if (!missing.length || plan.ageMs < 20 * 60_000) return;
+    island.showNotice({
+      id: `restore-${plan.from?.t ?? 0}`,
+      title: 'Where you were',
+      detail: describePlan(plan),
+      tone: 'go',
+      action: 'restore-workspace',
+      actionLabel: 'Put it back',
+      expiresAt: Date.now() + 3 * 60_000,
+    });
+    log.info('workspace', 'offered to restore', { why, missing: missing.length, ageMinutes: Math.round(plan.ageMs / 60_000) });
+  } catch (e) {
+    log.debug('workspace', 'could not offer a restore', { error: (e as Error).message });
+  }
 }
 
 /** Show the HUD and bring it forward, whatever it was doing. */
@@ -218,8 +261,20 @@ async function main() {
   });
   scheduler.on('signal', (sig) => {
     lastFront = { bundleId: sig.bundleId, windowTitle: sig.windowTitle };
+    // Shadow mode needs to know that `com.tinyspeck.slackmacgap` is the thing
+    // a run recorded as "Slack". The T0 signal says both, for nothing.
+    appNames.note(sig.bundleId, sig.appName);
   });
   memory.attach(scheduler);
+  // "Where was I?" — one accessibility call every half minute, no model, and
+  // the capture exclusion list applied on the way in (`workspace/tracker.ts`).
+  workspace = new WorkspaceTracker({
+    windows: () => sidecar.appWindows(),
+    open: (p) => sidecar.openApp(p),
+    exclusions: () => settings.get().exclusions,
+    sessionStartedAt: () => engine.session.current()?.startedAt ?? null,
+  });
+  workspace.on('change', () => broadcast(CH.onWorkspace, null));
   voice = new VoiceListener({ settings: () => settings.get(), transport: sidecar });
   voice.on('status', () => updateTray());
   voice.on('wake', () => {
@@ -229,7 +284,7 @@ async function main() {
   });
   voice.on('intent', (i: VoiceIntent) => onVoiceIntent(i));
   voice.on('instruction', (i: { text: string; addressed: boolean; plausible: boolean }) => void onVoiceInstruction(i));
-  registerIpc({ scheduler, engine, activation, standby, voice, getState: () => state, setState });
+  registerIpc({ scheduler, engine, activation, standby, voice, workspace, getState: () => state, setState });
   createTray();
   createHud(); // built now so the hotkey is instant later
   // buddy's own clicks steal focus from the HUD constantly; blur must not
@@ -270,6 +325,14 @@ async function main() {
   operator.setIntentSink((i) => island.intent(i));
   island.onAction('open-hud', () => showHud());
   island.onAction('dismiss-notice', () => island.showNotice(null));
+  // The island's "Restore" button. The items are the person's own windows, so
+  // this opens them rather than asking again — the fuller list, with the
+  // things it would leave alone, is the card on Home.
+  island.onAction('restore-workspace', async () => {
+    island.showNotice(null);
+    const plan = await workspace.plan();
+    await workspace.restore(plan.items);
+  });
   // After the sidecar, because buddyd holds the microphone. A later restart of
   // buddyd re-arms it on its own (`ready`).
   void voice.reconcile();
@@ -299,10 +362,12 @@ async function main() {
     if (p.screenRecording && !scheduler.isRunning() && !settings.get().paused) {
       scheduler.start();
       if (settings.get().notesEnabled) engine.start();
+      syncWorkspace();
       setState('OBSERVING');
     } else if (!p.screenRecording && scheduler.isRunning()) {
       scheduler.stop();
       engine.stop();
+      workspace.stop();
       setState('IDLE');
       log.warn('app', 'Screen Recording was revoked; observation stopped');
     }
@@ -330,10 +395,14 @@ async function main() {
     // the lock screen anyway (§1, non-goals).
     voice.setLocked(true);
   });
-  powerMonitor.on('unlock-screen', () => voice.setLocked(false));
+  powerMonitor.on('unlock-screen', () => {
+    voice.setLocked(false);
+    void offerRestore('unlock');
+  });
   powerMonitor.on('resume', () => {
     log.info('app', 'system resumed');
     voice.setAsleep(false);
+    void offerRestore('wake');
   });
   // The tray menu is rebuilt on every state change, which is what keeps the
   // Stop item present for exactly as long as there is something to stop.
@@ -367,6 +436,7 @@ async function main() {
   });
   settings.on('changed', (next) => {
     scheduler.updateSettings(next);
+    syncWorkspace();
     engine.updateSettings(next);
     standby.updateSettings(next);
     // Covers the voice toggle, the phrase list, and Pause — a paused buddy is
@@ -382,6 +452,7 @@ async function main() {
   if (perms.screenRecording && !s.paused) {
     scheduler.start();
     if (s.notesEnabled) engine.start();
+    syncWorkspace();
     setState('OBSERVING');
   } else {
     setState(s.paused ? 'PAUSED' : 'IDLE');
@@ -585,6 +656,7 @@ app.on('will-quit', async (e) => {
   // the observations survive to be rolled up at next launch either way.
   engine?.stop();
   memory.stop();
+  workspace?.stop();
   island.stop();
   scheduler?.stop();
   await sidecar.stop();

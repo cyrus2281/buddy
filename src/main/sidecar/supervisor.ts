@@ -45,6 +45,8 @@ export interface AppWindows {
     windowId?: number;
     /** `AXDocument`: the file the window is showing, as a file URL. */
     document?: string;
+    /** The page a browser's focused window is on. */
+    url?: string;
   }[];
 }
 

@@ -22,6 +22,7 @@ export default defineConfig({
           'memory-checks': path.resolve('src/main/memory-checks.ts'),
           'hands-checks': path.resolve('src/main/hands-checks.ts'),
           'island-checks': path.resolve('src/main/island-checks.ts'),
+          'restore-checks': path.resolve('src/main/restore-checks.ts'),
           // The one thing in the repo that talks to the live API (PRD §10, M4).
           'live-run': path.resolve('src/main/live-run.ts'),
           'live-standby': path.resolve('src/main/live-standby.ts'),

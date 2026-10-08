@@ -571,6 +571,79 @@ export function SettingsView({
       </Section>
 
       <Section
+        title="Where was I?"
+        hint="The arrangement of windows you had open, so it can be put back — and how often buddy's read of you turns out to be right."
+      >
+        <Card className="flex flex-col gap-5 p-4">
+          <div className="flex items-start justify-between gap-5">
+            <div className="min-w-0">
+              <p className="text-[12px] font-medium text-fog-100">Remember what was open</p>
+              <p className="mt-1 text-[11px] leading-relaxed text-fog-500">
+                Every half minute while observing, buddy writes down which apps have windows open, the
+                files they are showing, and the page a browser's front window is on. One accessibility
+                call, no model, no screenshot. The exclusion list above applies: a password manager and a
+                private browsing window are never recorded, and the count of what was left out is shown
+                beside the restore. Twenty snapshots are kept, rolling.
+              </p>
+            </div>
+            <Toggle
+              checked={settings.rememberWorkspace}
+              label="Remember what was open"
+              onChange={(v) => void update({ rememberWorkspace: v })}
+            />
+          </div>
+
+          {settings.rememberWorkspace && (
+            <div className="flex items-start justify-between gap-5 border-t border-ink-700/60 pt-4">
+              <div className="min-w-0">
+                <p className="text-[12px] font-medium text-fog-100">Offer to put it back</p>
+                <p className="mt-1 text-[11px] leading-relaxed text-fog-500">
+                  When you come back to the machine after twenty minutes or more and something you had
+                  open is gone, the island offers to reopen it. Off, “Where was I?” is still on Home and
+                  in the menu bar whenever you want it. Restoring opens things behind what you are doing;
+                  it never closes anything.
+                </p>
+              </div>
+              <Toggle
+                checked={settings.offerRestore}
+                label="Offer to put it back"
+                onChange={(v) => void update({ offerRestore: v })}
+              />
+            </div>
+          )}
+
+          <div className="flex items-start justify-between gap-5 border-t border-ink-700/60 pt-4">
+            <div className="min-w-0">
+              <p className="text-[12px] font-medium text-fog-100">Keep score of how well buddy reads you</p>
+              <p className="mt-1 text-[11px] leading-relaxed text-fog-500">
+                Every activation is a guess about what you are doing, and running it or typing over it is
+                the answer. buddy counts both, per kind of task, and says so in the HUD — including when
+                its record is poor, which is the half worth having. On a task it has read right five times
+                running <em>and</em> that has never needed you to approve anything, it offers the
+                unattended profile; you still choose it. It never offers leashless, and never changes a
+                profile on its own.
+              </p>
+            </div>
+            <Toggle
+              checked={settings.shadowTrust}
+              label="Keep score of how well buddy reads you"
+              onChange={(v) => void update({ shadowTrust: v })}
+            />
+          </div>
+
+          <div className="flex items-center justify-between gap-5 border-t border-ink-700/60 pt-4">
+            <p className="text-[11px] leading-relaxed text-fog-500">
+              Forget every arrangement buddy has recorded. The score is kept with the runs it comes from;
+              deleting a run in the Run Log removes it from that too.
+            </p>
+            <Button variant="danger" onClick={() => void api.forgetWorkspace()}>
+              Forget what was open
+            </Button>
+          </div>
+        </Card>
+      </Section>
+
+      <Section
         title="Runs"
         hint="What a run starts with when goal inference has not seeded it. The allowlist is per run and confirmed in the same keystroke as the goal — this is the fallback, and what a typed goal uses. It does not apply to leashless, which has no allowlist."
       >

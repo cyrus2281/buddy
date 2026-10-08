@@ -154,6 +154,11 @@ enum Hands {
             let axApp = AXUIElementCreateApplication(pid)
             let focused = copy(axApp, kAXFocusedWindowAttribute).map { unsafeDowncast($0 as AnyObject, to: AXUIElement.self) }
             let wins = (copy(axApp, kAXWindowsAttribute) as? [AXUIElement]) ?? []
+            // The page a browser is on, for the focused window only: reading a
+            // URL means walking a window's tree for its web area, and doing
+            // that for every window of every browser would turn one cheap call
+            // into dozens of deep ones.
+            let page = TargetInfo.browsers.contains(app.bundleIdentifier ?? "") ? TargetInfo.pageURL(pid: pid) : nil
             return [
                 "pid": Int(pid),
                 "bundleId": app.bundleIdentifier ?? "",
@@ -173,6 +178,7 @@ enum Hands {
                     if let f = frame(w) { o["frame"] = ["x": f.origin.x, "y": f.origin.y, "w": f.width, "h": f.height] }
                     if let id = windowID(w, pid: pid) { o["windowId"] = Int(id) }
                     if let doc = string(w, kAXDocumentAttribute), !doc.isEmpty { o["document"] = doc }
+                    if let page, (o["focused"] as? Bool) == true { o["url"] = page }
                     return o
                 },
             ]

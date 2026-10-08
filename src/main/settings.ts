@@ -142,6 +142,9 @@ class SettingsStore extends EventEmitter {
     out.learningEnabled = out.learningEnabled !== false;
     out.handsOffDefault = !!out.handsOffDefault;
     out.islandEnabled = out.islandEnabled !== false;
+    out.rememberWorkspace = out.rememberWorkspace !== false;
+    out.offerRestore = out.offerRestore !== false;
+    out.shadowTrust = out.shadowTrust !== false;
     out.ghostCursor = out.ghostCursor !== false;
     if (out.islandPlacement !== 'main') out.islandPlacement = 'notch';
     if (out.defaultProfile !== 'attended' && out.defaultProfile !== 'unattended') {

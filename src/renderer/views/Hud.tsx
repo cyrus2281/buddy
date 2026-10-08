@@ -649,6 +649,14 @@ function Armed({
         ))}
       </div>
 
+      {/* Shadow mode: buddy's own record on this kind of task, and — only
+          when that record says it would cost nothing — an offer to run it
+          unattended. Beside the profile cards, because that is what it is
+          about. */}
+      {!spoken && state.trust && (
+        <TrustLine trust={state.trust} profileIsMine={profileIsMine} onTake={() => setProfile('unattended')} />
+      )}
+
       {/* Orthogonal to the profile: what is allowed does not change, only how
           buddy reaches the app. Hence a switch beside the three cards rather
           than a fourth card. */}
@@ -780,6 +788,50 @@ function Armed({
           </button>
         </div>
       </div>
+    </div>
+  );
+}
+
+/**
+ * What buddy's record on this kind of task is, and the one thing it may offer.
+ *
+ * The offer is a button that sets the profile — the same thing the person
+ * could do with Tab — and it is only ever `unattended`, only for a task whose
+ * history shows it never needed a confirmation (`shared/trust.ts` holds the
+ * rule and the reason). Once they have chosen a profile themselves the offer
+ * goes away: buddy proposing something they have just overruled is nagging.
+ */
+function TrustLine({
+  trust,
+  profileIsMine,
+  onTake,
+}: {
+  trust: NonNullable<InferenceState['trust']>;
+  profileIsMine: boolean;
+  onTake: () => void;
+}) {
+  const bad = trust.level === 'shaky';
+  return (
+    <div
+      className={`rounded-xl border px-3.5 py-2.5 ${
+        bad ? 'border-rust-400/40 bg-rust-400/5' : 'border-ink-700/60 bg-ink-850/40'
+      }`}
+    >
+      <p className={`text-[11px] leading-relaxed ${bad ? 'text-rust-400' : 'text-fog-300'}`}>
+        <span className="font-mono text-[10px] text-fog-500">{trust.label}</span> — {trust.sentence}
+      </p>
+      {trust.offer && !profileIsMine && (
+        <div className="mt-2 flex items-start justify-between gap-3">
+          <p className="text-[11px] leading-relaxed text-fog-500">{trust.offer.why}</p>
+          <button
+            onClick={onTake}
+            className="shrink-0 rounded-lg border border-moss-400/50 bg-moss-400/10 px-2.5 py-1
+                       text-[11px] font-medium text-moss-400 transition-colors hover:bg-moss-400/20"
+          >
+            Run unattended
+          </button>
+        </div>
+      )}
     </div>
   );
 }

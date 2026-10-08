@@ -24,6 +24,9 @@ import type { NotesEngine } from './notes/engine.js';
 import type { Activation } from './agent/activation.js';
 import type { StandbyManager } from './agent/standby.js';
 import type { VoiceListener } from './voice/listener.js';
+import type { WorkspaceTracker } from './workspace/tracker.js';
+import { shadow } from './shadow/trust.js';
+import type { RestoreItem } from '../shared/workspace.js';
 import type { CaptureScheduler } from './capture/scheduler.js';
 import {
   type Allowlist,
@@ -70,6 +73,7 @@ interface Ctx {
   activation: Activation;
   standby: StandbyManager;
   voice: VoiceListener;
+  workspace: WorkspaceTracker;
   getState: () => AppState;
   setState: (s: AppState) => void;
 }
@@ -213,6 +217,15 @@ export function registerIpc(ctx: Ctx) {
   ipcMain.handle(CH.deleteRun, (_e, runId: number) => operator.deleteRun(runId));
   ipcMain.handle(CH.armHud, () => ctx.setState('ARMED'));
   ipcMain.handle(CH.hudResize, (_e, height: number) => resizeHud(height));
+  // ── "Where was I?" and shadow mode ──────────────────────────────────────
+
+  ipcMain.handle(CH.getRestorePlan, () => ctx.workspace.plan());
+  ipcMain.handle(CH.restoreWorkspace, (_e, items: RestoreItem[]) =>
+    ctx.workspace.restore(Array.isArray(items) ? items : []),
+  );
+  ipcMain.handle(CH.forgetWorkspace, () => ctx.workspace.forget());
+  ipcMain.handle(CH.getTrust, () => (settings.get().shadowTrust ? shadow.clusters() : []));
+
   ipcMain.handle(CH.setIslandInteractive, (_e, on: boolean) => island.setInteractive(!!on));
   ipcMain.handle(CH.getIsland, () => island.current());
   ipcMain.handle(CH.showHud, () => showHud());

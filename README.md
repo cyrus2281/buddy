@@ -42,6 +42,16 @@ sentence that drops down for each step, a question, or an outcome — and a ghos
 cursor glides to each click a moment before it happens, naming what it is
 aiming at.
 
+**And it can put your desk back.** buddy notices which apps, files and pages
+you had open, so when you come back from a meeting to a machine that has
+forgotten them, one button opens them again — behind what you are doing, never
+in front of it.
+
+**And it knows how often it is right about you.** Every activation is a guess,
+and running it or typing over it is the answer. buddy counts both, per kind of
+task, and says so before you commit: what it reads well, and what it keeps
+getting wrong.
+
 The typed goal is still there. It is now the override, not the entry point.
 
 ## Requirements
@@ -248,6 +258,95 @@ exposes through accessibility is the app's decision: a canvas, a game or a
 thin Electron UI gives hands-off little to act on, which is why it is a switch
 per run rather than the only way buddy works.
 
+## Where was I?
+
+**On by default; Settings › Where was I?.** PRD §2 prices the problem at twenty
+minutes a day: you come back from a meeting to a machine that has forgotten the
+six windows you had arranged, and the first part of the afternoon goes on
+finding them again. buddy was watching when you had them open, so it is the one
+thing on the machine that can say what they were.
+
+Every half minute while observing, it writes down which apps have windows open,
+the files they are showing (`AXDocument`), and the page a browser's front window
+is on. **One accessibility call, no model, no screenshot** — about two kilobytes
+for a dozen apps, measured on this Mac at 441 ms.
+
+Come back after twenty minutes or more and the island offers to put it back.
+Home has the fuller list: what is missing, with a tick beside each so you can
+leave something out, and what is already open shown greyed so "6 of 9 are
+already here" is visible before you decide. Everything is opened **without
+activating it**, so a restore of six windows does not throw you through six
+context switches on its way to finishing, and nothing is ever closed.
+
+### The parts worth knowing about
+
+**A document is what gets restored, not the app that opens it.** Six Chrome
+windows are six pages, and "open Chrome" would get none of them back. An app
+with nothing identifiable in it — a terminal, a chat app — is restored as
+itself, and an app that has documents to reopen is never also launched on its
+own, because opening the document launches it anyway.
+
+**The same exclusion list that keeps 1Password out of the frame vault keeps it
+out of here**, and for a stronger reason: a snapshot is text that outlives the
+daily frame purge, and "the documents and URLs you had open" is a more legible
+record of a day than a screenshot is. A password manager and a private browsing
+window are filtered **on the way in**, never on the way out, and what was left
+out is counted so the restore card can say so rather than presenting a partial
+picture as a whole one.
+
+**It is bounded by count, not by day.** Twenty snapshots, rolling, and an
+unchanged arrangement updates the newest one instead of taking a new slot — so
+an hour of working in one place is one row, and the twenty cover the last few
+sessions rather than the last ten minutes. One button in Settings forgets all of
+them.
+
+**"Where you were" is the last session, not thirty seconds ago.** The newest
+snapshot is from half a minute back and restoring it would be a no-op, so the
+offer is the last arrangement from a session that is not the one happening now.
+
+## Shadow mode — how often buddy is right about you
+
+**On by default; Settings › Where was I?.** Every time you press the hotkey,
+buddy guesses what you are doing, and you either run that guess or type
+something else. M5 already writes down which (`accepted`, `alternative`,
+`corrected`). Shadow mode is that record, gathered **per kind of task** — because
+one number over everything is useless: buddy can be excellent at filing a bug
+from a thread and hopeless at tidying a document, and an average hides both.
+
+Tasks are grouped by the apps they touched, and a new reading finds its group by
+overlap rather than an exact match, since no two runs touch exactly the same
+apps. In the HUD, beside the goal:
+
+> `Linear + Slack` — You have taken buddy's read on this kind of task 12 of 13 times.
+
+and, when the record is poor, the half no other tool has:
+
+> `Mail + Safari` — buddy read this kind of task right 2 of 5 times, and got the last one wrong. Worth a look before you run it.
+
+The **You** tab lists every kind of task with its rate, so a bad one is as
+visible as a good one.
+
+### The one thing a good record unlocks, and the rule that withholds it
+
+On a task with five or more runs, four in five of them buddy's own reading, the
+most recent not a correction, **and not one of them ever stopped at a
+confirmation**, the HUD offers the `unattended` profile — a button beside the
+profile cards, which you press or ignore.
+
+That last clause is the whole safety argument. Under `unattended` a send, a
+delete or an install is refused outright and the run parks (§7.1), so for a task
+that has never needed one the profile is a pure improvement: nobody is
+interrupted and nothing dangerous can happen. For a task that *has* needed one,
+switching to unattended would turn a question into a dead stop — worse for the
+person, and a thing buddy would have talked them into. So it is withheld,
+however long the streak. Whether a run ever stopped to ask is read off its own
+step verdicts in the Run Log, not off a flag something remembered to set.
+
+**buddy never changes a profile on its own, and never offers `leashless`** (§7.1
+makes that one a deliberate act, and a suggestion is the opposite of one). The
+record is read from rows that already exist — turning the switch off, or turning
+off learning, stops both the counting and the consulting.
+
 ## The island and the ghost cursor
 
 **On by default; both are in Settings › The island and the ghost cursor.**
@@ -327,6 +426,7 @@ state and the ghost on this screen.
 | `npm run check:m4` | The M4 exit-criteria checks (50 of them) |
 | `npm run check:voice` | The "hey buddy" checks (26 of them) — matcher, routing, the listener, and the real `buddyd` |
 | `npm run check:memory` | The M5 checks (39 of them) — the real embedder, the real sqlite-vec index, retrieval quality on a benchmark, learning through a scripted rollup |
+| `npm run check:restore` | The "Where was I?" and shadow-mode checks (20 of them) — the plan, the exclusion filter, the tracker, the score against real runs, and two against the real `buddyd` |
 | `npm run check:island` | The island and ghost-cursor checks (15 of them) — placement, every state, the ghost's contract with the executor, and real captures. `BUDDY_ISLAND_TOUR=<dir>` also photographs every state |
 | `npm run check:hands` | The hands-off checks (26 of them) — the tool surface, the guardrails against the named app, the loop, and a real press, value and window capture through the real `buddyd` |
 | `npm run live:run` | One real two-app run against a live Opus 5 (needs `ANTHROPIC_API_KEY`) |

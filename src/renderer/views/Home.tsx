@@ -5,6 +5,7 @@ import { Button, Card, Stat, StatusDot, spring, useMotionSafe } from '../compone
 import { PermissionsPanel } from './Permissions.js';
 import { StandbyPanel } from '../components/standby.js';
 import { AskBox } from '../components/ask.js';
+import { RestorePanel } from '../components/restore.js';
 import type {
   AnyNote,
   AppState,
@@ -147,6 +148,9 @@ export function Home({
       )}
 
       <StandbyPanel wakeups={wakeups} />
+
+      {/* "Where was I?" — shown only when something it saw is missing. */}
+      <RestorePanel />
 
       {spend?.capped && (
         <Card className="border-ember-400/40 bg-ember-500/5 p-3.5">

@@ -1,6 +1,8 @@
 import { EventEmitter } from 'node:events';
 import { log } from '../log.js';
 import { buildBundle, inferGoal, provisionalGoal } from './inference.js';
+import { shadow } from '../shadow/trust.js';
+import { settings } from '../settings.js';
 import type { NotesEngine } from '../notes/engine.js';
 import type { CaptureScheduler } from '../capture/scheduler.js';
 import type { InferenceState } from '../../shared/types.js';
@@ -93,6 +95,7 @@ export class Activation extends EventEmitter {
         ms: out.ms,
         costUsd: out.costUsd,
         requestId: id,
+        trust: this.trustFor(out.reading.target_apps, out.reading.proposed_profile),
       });
     } catch (e) {
       if (id !== this.requestId || controller.signal.aborted) return;
@@ -101,6 +104,20 @@ export class Activation extends EventEmitter {
       this.settle(id, { ...this.state, phase: 'error', error: msg, ms: Date.now() - t0 });
     } finally {
       if (this.inFlight === controller) this.inFlight = null;
+    }
+  }
+
+  /** Shadow mode (`shared/trust.ts`): buddy's own record on this kind of task.
+   *  Read from rows that already exist, so it costs a query and no model call —
+   *  and it is skipped entirely when either learning or shadow mode is off,
+   *  because both are a person saying they do not want buddy keeping score. */
+  private trustFor(apps: string[], proposed: string) {
+    const s = settings.get();
+    if (!s.shadowTrust || !s.learningEnabled) return null;
+    try {
+      return shadow.forApps(apps, proposed);
+    } catch {
+      return null;
     }
   }
 

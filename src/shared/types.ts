@@ -226,6 +226,18 @@ export interface Settings {
   /** How long the ghost arrives ahead of the real event. Long enough to read,
    *  short enough not to make every run feel slower. */
   ghostLeadMs: number;
+
+  // "Where was I?" and shadow mode.
+  /** Remember which apps, documents and pages were open, so an arrangement
+   *  can be put back. The capture exclusion list applies: a password manager
+   *  and a private browsing window are never recorded. */
+  rememberWorkspace: boolean;
+  /** Offer to put it back when you come back to the machine after a while.
+   *  Off, "Where was I?" is still there to ask for. */
+  offerRestore: boolean;
+  /** Keep score of how often you take buddy's read, per kind of task, and say
+   *  so when it matters. Rides on what M5 already records. */
+  shadowTrust: boolean;
 }
 
 /** The six things buddy asks Claude to do, each on its own model.
@@ -330,6 +342,9 @@ export const DEFAULT_SETTINGS: Settings = {
   islandPlacement: 'notch',
   ghostCursor: true,
   ghostLeadMs: 280,
+  rememberWorkspace: true,
+  offerRestore: true,
+  shadowTrust: true,
   voiceConfirmPhrases: [
     'take over',
     'take it over',
@@ -721,6 +736,10 @@ export interface GoalReading {
 }
 
 export interface InferenceState {
+  /** Shadow mode: what buddy's record is on this kind of task, when it has
+   *  one. Optional because most readings have nothing to say, and because an
+   *  older stored state has no field for it. */
+  trust?: import('./trust.js').TrustView | null;
   phase: InferencePhase;
   /** Always present from the first ~200 ms: the local guess, then the model's. */
   goal: string | null;
