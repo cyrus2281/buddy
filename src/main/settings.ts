@@ -76,6 +76,7 @@ const CLAMPS: Partial<Record<keyof Settings, [number, number]>> = {
   // A one-second poll would hammer SQLite for a feature whose unit is minutes;
   // ten minutes would make a five-minute wakeup fire late by half its interval.
   wakePollMs: [2_000, 120_000],
+  speechRate: [0, 1],
   // Past a second and a half the ghost stops being a preview and starts being
   // a delay on every click.
   ghostLeadMs: [0, 1_500],
@@ -139,6 +140,12 @@ class SettingsStore extends EventEmitter {
     out.voiceConfirmPhrases = cleanList(out.voiceConfirmPhrases);
     out.voiceEnabled = !!out.voiceEnabled;
     out.voiceInstructionsAutoStart = out.voiceInstructionsAutoStart !== false;
+    out.speechEnabled = !!out.speechEnabled;
+    out.speakGoals = out.speakGoals !== false;
+    out.speakAnswers = out.speakAnswers !== false;
+    out.speakRuns = out.speakRuns !== false;
+    out.speechHeadphonesOnly = out.speechHeadphonesOnly !== false;
+    out.speechVoice = (out.speechVoice ?? '').trim();
     out.learningEnabled = out.learningEnabled !== false;
     out.handsOffDefault = !!out.handsOffDefault;
     out.islandEnabled = out.islandEnabled !== false;

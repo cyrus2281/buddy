@@ -14,6 +14,10 @@ import type {
   VoicePermission,
 } from '../../shared/types.js';
 import type { TargetInfo } from '../agent/guardrails.js';
+// The speech wire shapes live in shared: the renderer reads them too, and a
+// renderer must never reach into a main-process module for a type.
+import type { SpeakEvent, SpeakStatus, SpeakVoices } from '../../shared/speech.js';
+export type { SpeakEvent, SpeakStatus, SpeakVoices };
 
 /** `voice_status` as buddyd sends it. */
 export interface RawVoiceStatus {
@@ -162,6 +166,9 @@ export class Sidecar extends EventEmitter {
     });
     this.rpc.onNotification('voice_utterance', (p) => {
       for (const fn of this.voiceHandlers) fn({ type: 'utterance', id: p.id, text: String(p.text ?? '') });
+    });
+    this.rpc.onNotification('speak_event', (p) => {
+      for (const fn of this.speakHandlers) fn({ id: Number(p.id ?? 0), state: String(p.state ?? '') as SpeakEvent['state'] });
     });
     this.rpc.onNotification('voice_state', (p) => {
       for (const fn of this.voiceHandlers) fn({ type: 'state', listening: !!p.listening, error: p.error ?? null });
@@ -381,6 +388,38 @@ export class Sidecar extends EventEmitter {
    *  while, hence the long timeout. */
   requestVoicePermission = (kind: 'microphone' | 'speech') =>
     this.require().call<{ granted: boolean; status: RawVoiceStatus }>('voice_request_permission', { kind }, 120_000);
+
+  // --- Speaking (Speak.swift). PRD §9's VoiceIO seam, output side. ---
+
+  /** Every installed voice for the language, best first, plus the one buddy
+   *  would use with nothing configured. */
+  speakVoices = (language = 'en') =>
+    this.require().call<SpeakVoices>('speak_voices', { language }, 8_000);
+  /** Say it. Returns immediately; `speak_event` says when it started and
+   *  finished. `skipped` means a rule in buddyd refused — the room was wrong
+   *  for it, not the text. */
+  speak = (p: {
+    text: string;
+    id: number;
+    voice?: string;
+    rate?: number;
+    headphonesOnly?: boolean;
+    /** buddy's own listener is what has the microphone open, so the
+     *  mic-in-use rule cannot read anything into it. */
+    ourMic?: boolean;
+    /** 0…1. The checks synthesize silently; nothing else sets it. */
+    volume?: number;
+    force?: boolean;
+  }) => this.require().call<{ speaking: boolean; id: number; skipped?: string }>('speak', p, 10_000);
+  speakStop = () => this.require().call<{ speaking: boolean; stopped?: boolean }>('speak_stop', {}, 5_000);
+  speakStatus = () => this.require().call<SpeakStatus>('speak_status', {}, 5_000);
+
+  /** Survives a sidecar restart, like `onHumanInput`. */
+  onSpeak(fn: (e: SpeakEvent) => void) {
+    this.speakHandlers.add(fn);
+    return () => this.speakHandlers.delete(fn);
+  }
+  private speakHandlers = new Set<(e: SpeakEvent) => void>();
 
   /** Survives a sidecar restart, like `onHumanInput`. */
   onVoice(fn: (e: VoiceEvent) => void) {

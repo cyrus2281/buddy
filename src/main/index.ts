@@ -18,6 +18,8 @@ import { Activation } from './agent/activation.js';
 import { StandbyManager } from './agent/standby.js';
 import { notify } from './notify.js';
 import { VoiceListener } from './voice/listener.js';
+import { SpeechService } from './voice/speech.js';
+import { goalUtterance, runUtterance } from '../shared/speech.js';
 import { routeInstruction, routeIntent, VOICE_CONTINUE_WINDOW_MS, VOICE_DICTATION_WINDOW_MS } from './voice/route.js';
 import { appsMentioned } from './voice/apps.js';
 import { island } from './island.js';
@@ -38,6 +40,7 @@ let activation: Activation;
 let standby: StandbyManager;
 let voice: VoiceListener;
 let workspace: WorkspaceTracker;
+let speech: SpeechService;
 /** When the HUD was last armed, by either trigger. A spoken go-ahead is only
  *  honoured for a while after it (see `voice/route.ts`). */
 let armedAt = 0;
@@ -55,6 +58,9 @@ let dictationUntil = 0;
 /** Until when an utterance is taken as the rest of the last instruction —
  *  people pause mid-sentence, and buddyd cuts utterances at the pause. */
 let continueUntil = 0;
+/** The run whose ending has already been said, so the repeated terminal
+ *  updates a run emits on its way out are one sentence. */
+let spokenRunEnd = 0;
 
 function setState(next: AppState) {
   if (next === state) return;
@@ -276,6 +282,23 @@ async function main() {
   });
   workspace.on('change', () => broadcast(CH.onWorkspace, null));
   voice = new VoiceListener({ settings: () => settings.get(), transport: sidecar });
+  // PRD §9's VoiceIO seam, output side. It is given the listener so it can say
+  // whether buddy's own microphone is what is open — the one thing buddyd
+  // cannot work out for itself.
+  speech = new SpeechService({
+    settings: () => settings.get(),
+    transport: sidecar,
+    listening: () => voice.current().listening,
+  });
+  speech.on('change', () => broadcast(CH.onSpeech, speech.current()));
+  // The goal, read aloud as soon as buddy has actually read the screen. Never
+  // the ~200 ms provisional guess: saying a guess out loud as a statement is
+  // how someone ends up agreeing to something buddy was not sure about.
+  activation.on('change', (st) => {
+    if (st.phase !== 'ready' || !st.goal || !isHudVisible()) return;
+    const mustAsk = !!st.reading && st.reading.confidence < 0.5;
+    void speech.say('goal', goalUtterance(st.goal, st.reading, mustAsk));
+  });
   voice.on('status', () => updateTray());
   voice.on('wake', () => {
     // A bare "hey buddy" — say what you want next, without saying it again.
@@ -284,7 +307,7 @@ async function main() {
   });
   voice.on('intent', (i: VoiceIntent) => onVoiceIntent(i));
   voice.on('instruction', (i: { text: string; addressed: boolean; plausible: boolean }) => void onVoiceInstruction(i));
-  registerIpc({ scheduler, engine, activation, standby, voice, workspace, getState: () => state, setState });
+  registerIpc({ scheduler, engine, activation, standby, voice, workspace, speech, getState: () => state, setState });
   createTray();
   createHud(); // built now so the hotkey is instant later
   // buddy's own clicks steal focus from the HUD constantly; blur must not
@@ -295,7 +318,8 @@ async function main() {
   // A gate needs an answer, so it brings the HUD back if the island sent it
   // away — and a hands-off run asks without taking the keyboard (see
   // `showHudPassive`).
-  operator.on('gate', () => {
+  operator.on('gate', (g) => {
+    void speech.say('run', runUtterance({ status: 'gated', outcome: null, haltReason: null, gate: g, goal: '' }));
     if (operator.active()?.handsOff) showHudPassive();
     else if (!isHudVisible()) showHudNow();
   });
@@ -390,6 +414,8 @@ async function main() {
   });
   powerMonitor.on('lock-screen', () => {
     log.info('app', 'screen locked; ending the session');
+    // Nobody is there to hear it, and the room may not be empty.
+    void speech.stop();
     engine.onSystemSleep();
     // Nobody at a locked Mac is talking to it, and buddy cannot act across
     // the lock screen anyway (§1, non-goals).
@@ -420,6 +446,13 @@ async function main() {
       notify.needsHuman(v.id, v.goal, v.haltReason ?? v.outcome?.summary ?? 'The run stopped.');
     }
     if (v.status === 'running') notifiedNeedsHuman = 0;
+    // The moment speaking earns its place: unattended and hands-off exist so
+    // the person can be somewhere else, and a run that ends is otherwise
+    // silent until they look.
+    if (v.endedAt && v.id !== spokenRunEnd && ['done', 'needs_human', 'waiting'].includes(v.status)) {
+      spokenRunEnd = v.id;
+      void speech.say('run', runUtterance(v));
+    }
     // A hands-off run happens out of sight, so its ending is brought back into
     // view — passively, for the same reason its gates are. With the island on,
     // the island says it instead.
@@ -495,6 +528,7 @@ function activate(source: 'hotkey' | 'voice') {
     dictationUntil = 0;
     continueUntil = 0;
     activation.cancel('dismissed');
+    void speech.stop();
     hideHud();
     setState(scheduler.isRunning() ? 'OBSERVING' : 'IDLE');
     return;
@@ -515,10 +549,12 @@ function onVoiceIntent(intent: VoiceIntent) {
     state,
     armedAt,
     now: Date.now(),
+    echoing: speech.echoing(),
   });
   log.info('voice', action === 'ignore' ? 'command ignored' : 'command', { kind: intent.kind, action, why });
   switch (action) {
     case 'stop-run':
+      void speech.stop();
       operator.stop('voice');
       // Shown rather than hidden, as with the abort hotkey: the user needs to
       // see that it stopped and what it had done.
@@ -527,6 +563,7 @@ function onVoiceIntent(intent: VoiceIntent) {
     case 'dismiss':
       dictationUntil = 0;
       continueUntil = 0;
+      void speech.stop();
       broadcast(CH.onVoiceCommand, { kind: action, t: Date.now() });
       return;
     case 'confirm':
@@ -551,6 +588,12 @@ function onVoiceIntent(intent: VoiceIntent) {
  */
 async function onVoiceInstruction(i: { text: string; addressed: boolean; plausible: boolean }) {
   const now = Date.now();
+  // Buddy's own voice, coming back through the microphone. A sentence it read
+  // off the screen must not become the next thing it is asked to do.
+  if (speech.echoing()) {
+    log.debug('voice', 'instruction ignored while buddy was speaking');
+    return;
+  }
   const { action, why } = routeInstruction(i, { running: operator.isRunning(), dictationUntil, continueUntil, now });
   if (action === 'ignore') {
     if (i.addressed) log.info('voice', 'instruction ignored', { why });
@@ -596,6 +639,7 @@ function bindHotkeys() {
       handler: () => {
         log.warn('hotkey', 'abort pressed', { state });
         activation.cancel('dismissed');
+        void speech.stop();
         if (operator.stop('hotkey')) {
           // Show the HUD rather than hiding it: the user needs to see that it
           // stopped and what it had done.

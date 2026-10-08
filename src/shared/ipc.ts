@@ -32,6 +32,7 @@ import type {
   SecretsStatus,
   Settings,
   SidecarStatus,
+  SpeechState,
   SpendReport,
   StartRunRequest,
   TaskScope,
@@ -45,6 +46,7 @@ import type {
 import type { IslandNotice, IslandPlacement } from './island.js';
 import type { RestoreItem, RestorePlan } from './workspace.js';
 import type { TrustCluster } from './trust.js';
+import type { SpeakStatus, SpeakVoices } from './speech.js';
 
 /// The IPC contract, written once and imported by main, preload, and renderer.
 /// Channel names live here as constants so a typo is a compile error rather
@@ -134,6 +136,12 @@ export const CH = {
   forgetWorkspace: 'buddy:forgetWorkspace',
   getTrust: 'buddy:getTrust',
 
+  // Voice replies
+  speakNow: 'buddy:speakNow',
+  stopSpeaking: 'buddy:stopSpeaking',
+  getVoices: 'buddy:getVoices',
+  getSpeech: 'buddy:getSpeech',
+
   // The island and the ghost cursor
   setIslandInteractive: 'buddy:setIslandInteractive',
   getIsland: 'buddy:getIsland',
@@ -168,6 +176,7 @@ export const CH = {
   onVoiceCommand: 'buddy:voiceCommand',
   onMemoryChanged: 'buddy:memoryChanged',
   onWorkspace: 'buddy:workspace',
+  onSpeech: 'buddy:speech',
   onIntent: 'buddy:intent',
   onIslandPlacement: 'buddy:islandPlacement',
   onIslandNotice: 'buddy:islandNotice',
@@ -350,6 +359,14 @@ export interface BuddyApi {
   /** Shadow mode: every kind of task buddy has done, and how often you took
    *  its read. */
   getTrust(): Promise<TrustCluster[]>;
+  /** Say something now — the Settings preview button, and the HUD's "say that
+   *  again". Ignores the per-kind switches, not the room rules. */
+  speakNow(text: string): Promise<string>;
+  stopSpeaking(): Promise<void>;
+  /** Installed voices, with the one buddy would use, and what the sound is
+   *  going out of right now. */
+  getVoices(): Promise<SpeakVoices & { status: SpeakStatus | null }>;
+  getSpeech(): Promise<SpeechState>;
   setIslandInteractive(on: boolean): Promise<void>;
   /** Where the island is and any notice it is holding, pulled on mount: a push
    *  sent at `did-finish-load` can arrive before React has subscribed. */
@@ -362,6 +379,8 @@ export interface BuddyApi {
   /** A new snapshot, a restore, or a forget: anything showing the arrangement
    *  should re-read it. */
   onWorkspace(fn: () => void): () => void;
+  /** buddy started or stopped speaking, or could not. */
+  onSpeech(fn: (s: SpeechState) => void): () => void;
   onIntent(fn: (i: GhostIntent) => void): () => void;
   onIslandPlacement(fn: (p: IslandPlacement) => void): () => void;
   onIslandNotice(fn: (n: IslandNotice | null) => void): () => void;

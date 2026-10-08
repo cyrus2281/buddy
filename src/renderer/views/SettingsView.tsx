@@ -3,6 +3,7 @@ import { api } from '../useBuddy.js';
 import { Button, Card, Field, NumberInput, StatusDot, Toggle } from '../components/primitives.js';
 import { PermissionsPanel } from './Permissions.js';
 import { ANTHROPIC_DEFAULT_MODELS } from '../../shared/types.js';
+import { SKIP_REASON, type SpeakStatus, type SpeakVoices } from '../../shared/speech.js';
 import type {
   AnthropicRole,
   NotesStats,
@@ -15,6 +16,7 @@ import type {
   SecretsStatus,
   Settings,
   SidecarStatus,
+  SpeechState,
   SpendReport,
   SpendTier,
   VoicePermission,
@@ -898,6 +900,8 @@ function VoicePanel({
         leashless. A bare “stop” does not stop a run — say “buddy, stop”.
       </p>
 
+      <SpeechPanel settings={settings} update={update} />
+
       <div className="flex items-start justify-between gap-5 border-t border-ink-700/60 pt-4">
         <div className="min-w-0">
           <p className="text-[12px] font-medium text-fog-100">Start spoken instructions on their own</p>
@@ -1291,6 +1295,166 @@ function TestResult({ label, result }: { label: string; result: ProviderTestResu
           </li>
         ))}
       </ul>
+    </div>
+  );
+}
+
+/**
+ * Voice replies: buddy saying things out loud.
+ *
+ * The copy carries the argument, because the argument is the feature. Speaking
+ * is the one thing buddy does that other people can hear, and everything it
+ * has to say was read off this person's screen — so the panel leads with who
+ * else is in the room rather than with the voice picker.
+ */
+function SpeechPanel({
+  settings,
+  update,
+}: {
+  settings: Settings;
+  update: (patch: Partial<Settings>) => Promise<void>;
+}) {
+  const [voices, setVoices] = useState<(SpeakVoices & { status: SpeakStatus | null }) | null>(null);
+  const [speech, setSpeech] = useState<SpeechState | null>(null);
+
+  useEffect(() => {
+    if (!settings.speechEnabled) return;
+    void api.getVoices().then(setVoices);
+    void api.getSpeech().then(setSpeech);
+    return api.onSpeech(setSpeech);
+  }, [settings.speechEnabled]);
+
+  const chosen = voices?.voices.find((v) => v.id === settings.speechVoice);
+  const using = chosen ?? voices?.voices.find((v) => v.id === voices.preferred);
+  const good = voices?.voices.some((v) => v.quality !== 'default');
+
+  return (
+    <div className="flex flex-col gap-5 border-t border-ink-700/60 pt-4">
+      <div className="flex items-start justify-between gap-5">
+        <div className="min-w-0">
+          <p className="text-[12px] font-medium text-fog-100">Say things out loud</p>
+          <p className="mt-1 text-[11px] leading-relaxed text-fog-500">
+            buddy reads out the goal it has just read off your screen, answers from the Ask box, and
+            the moment a run asks you something or ends. Synthesised on this Mac by macOS, like
+            recognition — nothing is sent anywhere. It is off by default because this is the one
+            thing buddy does that other people can hear, and what it says came off your screen.
+          </p>
+        </div>
+        <Toggle
+          checked={settings.speechEnabled}
+          label="Say things out loud"
+          onChange={(v) => void update({ speechEnabled: v })}
+        />
+      </div>
+
+      {settings.speechEnabled && (
+        <>
+          <div className="flex items-start justify-between gap-5">
+            <div className="min-w-0">
+              <p className="text-[12px] font-medium text-fog-100">Only through headphones</p>
+              <p className="mt-1 text-[11px] leading-relaxed text-fog-500">
+                Through headphones what buddy says reaches one person. Through the built-in speakers
+                it is in the room — and if you are on a call, into the call. On, buddy stays quiet
+                unless the sound is going somewhere private.
+                {voices?.status && (
+                  <>
+                    {' '}
+                    Right now the sound goes to{' '}
+                    <span className="font-mono text-fog-300">{voices.status.output ?? 'nothing'}</span>, which
+                    buddy reads as {voices.status.outputIsPrivate ? 'private' : 'in the room'}.
+                  </>
+                )}
+              </p>
+            </div>
+            <Toggle
+              checked={settings.speechHeadphonesOnly}
+              label="Only through headphones"
+              onChange={(v) => void update({ speechHeadphonesOnly: v })}
+            />
+          </div>
+
+          <div className="flex flex-wrap gap-2">
+            {(
+              [
+                ['speakGoals', 'The goal it read'],
+                ['speakAnswers', 'Answers you asked for'],
+                ['speakRuns', 'When a run asks or ends'],
+              ] as const
+            ).map(([key, label]) => (
+              <button
+                key={key}
+                onClick={() => void update({ [key]: !settings[key] } as Partial<Settings>)}
+                className={`rounded-lg border px-3 py-1.5 text-[11px] transition-colors ${
+                  settings[key]
+                    ? 'border-ember-500/60 bg-ember-500/10 text-fog-100'
+                    : 'border-ink-700 text-fog-500 hover:border-ink-600'
+                }`}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+
+          <div className="grid gap-4 sm:grid-cols-2">
+            <Field
+              label="Voice"
+              hint={
+                good
+                  ? 'Blank uses the best one installed, preferring the voice you chose in System Settings.'
+                  : 'Only the compact voices are installed. System Settings › Accessibility › Spoken Content › System Voice › Manage Voices has far better ones; they are a free download.'
+              }
+            >
+              <select
+                value={settings.speechVoice}
+                onChange={(e) => void update({ speechVoice: e.target.value })}
+                className="w-full rounded-lg border border-ink-700 bg-ink-900 px-2.5 py-1.5 text-[12px]
+                           text-fog-100 outline-none focus:border-ember-500/70"
+              >
+                <option value="">
+                  Best installed{using ? ` — ${using.name}` : ''}
+                </option>
+                {(voices?.voices ?? []).map((v) => (
+                  <option key={v.id} value={v.id}>
+                    {v.name} · {v.language}
+                    {v.quality !== 'default' ? ` · ${v.quality}` : ''}
+                  </option>
+                ))}
+              </select>
+            </Field>
+            <Field label="Speed" hint="Across the useful range — the extremes of the system scale are unusable in both directions.">
+              <NumberInput
+                value={settings.speechRate}
+                min={0}
+                max={1}
+                step={0.05}
+                onChange={(n) => void update({ speechRate: n })}
+              />
+            </Field>
+          </div>
+
+          <div className="flex items-center justify-between gap-3">
+            <p className="text-[11px] leading-relaxed text-fog-500">
+              {speech?.lastSkip
+                ? SKIP_REASON[speech.lastSkip] ?? 'The last thing was not said out loud.'
+                : 'Esc, the abort hotkey and “buddy, stop” all stop it mid-sentence.'}
+            </p>
+            <div className="flex shrink-0 gap-2">
+              <Button
+                onClick={() =>
+                  void api.speakNow('Filing SAM-4412 from Priya’s thread in #sam-eng. The thread is open already.')
+                }
+              >
+                {speech?.speaking ? 'Speaking…' : 'Hear it'}
+              </Button>
+              {speech?.speaking && (
+                <Button variant="danger" onClick={() => void api.stopSpeaking()}>
+                  Stop
+                </Button>
+              )}
+            </div>
+          </div>
+        </>
+      )}
     </div>
   );
 }

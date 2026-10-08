@@ -42,6 +42,7 @@ swiftc -O \
   Sources/Target.swift \
   Sources/Hands.swift \
   Sources/Voice.swift \
+  Sources/Speak.swift \
   Sources/main.swift
 
 # Signed here with the same identity as the app so a dev-mode run matches the

@@ -25,6 +25,8 @@ import type { Activation } from './agent/activation.js';
 import type { StandbyManager } from './agent/standby.js';
 import type { VoiceListener } from './voice/listener.js';
 import type { WorkspaceTracker } from './workspace/tracker.js';
+import type { SpeechService } from './voice/speech.js';
+import { answerUtterance } from '../shared/speech.js';
 import { shadow } from './shadow/trust.js';
 import type { RestoreItem } from '../shared/workspace.js';
 import type { CaptureScheduler } from './capture/scheduler.js';
@@ -74,6 +76,7 @@ interface Ctx {
   standby: StandbyManager;
   voice: VoiceListener;
   workspace: WorkspaceTracker;
+  speech: SpeechService;
   getState: () => AppState;
   setState: (s: AppState) => void;
 }
@@ -225,6 +228,23 @@ export function registerIpc(ctx: Ctx) {
   );
   ipcMain.handle(CH.forgetWorkspace, () => ctx.workspace.forget());
   ipcMain.handle(CH.getTrust, () => (settings.get().shadowTrust ? shadow.clusters() : []));
+
+  // ── Voice replies ───────────────────────────────────────────────────────
+
+  ipcMain.handle(CH.speakNow, async (_e, text: string) => {
+    // The preview and "say that again" bypass the per-kind switches — the
+    // person is asking for this sentence — but not the room rules, which are
+    // enforced in buddyd and are about who else can hear it.
+    const was = settings.get();
+    if (!was.speechEnabled) return 'off';
+    return ctx.speech.say('answer', String(text ?? ''));
+  });
+  ipcMain.handle(CH.stopSpeaking, () => ctx.speech.stop());
+  ipcMain.handle(CH.getVoices, async () => ({
+    ...(await ctx.speech.availableVoices(true)),
+    status: await ctx.speech.status(),
+  }));
+  ipcMain.handle(CH.getSpeech, () => ctx.speech.current());
 
   ipcMain.handle(CH.setIslandInteractive, (_e, on: boolean) => island.setInteractive(!!on));
   ipcMain.handle(CH.getIsland, () => island.current());
@@ -384,6 +404,8 @@ export function registerIpc(ctx: Ctx) {
   ipcMain.handle(CH.askAboutMyDay, async (_e, question: string) => {
     const answer = await askAboutMyDay(question);
     ctx.engine.spend.record('qa', answer.costUsd);
+    // Read aloud, without the citation chips — those are for the eye.
+    void ctx.speech.say('answer', answerUtterance(answer));
     return answer;
   });
 

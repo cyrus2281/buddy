@@ -198,6 +198,27 @@ export interface Settings {
    *  waits for Enter or "go ahead". */
   voiceInstructionsAutoStart: boolean;
 
+  // Voice replies — buddy saying things out loud (PRD §9's VoiceIO seam).
+  /** Off by default: speaking is the one thing buddy does that other people
+   *  in the room can hear, and everything it has to say came off the
+   *  person's screen. */
+  speechEnabled: boolean;
+  /** What it reads off the screen when the HUD opens. */
+  speakGoals: boolean;
+  /** Answers from the Ask box. */
+  speakAnswers: boolean;
+  /** A run asking first, and a run ending — the moments the person is
+   *  deliberately not looking. */
+  speakRuns: boolean;
+  /** An `AVSpeechSynthesisVoice` identifier; blank means the best installed
+   *  voice for English, preferring the one chosen in System Settings. */
+  speechVoice: string;
+  /** 0 slowest, 1 fastest, across the useful range rather than AVFoundation's. */
+  speechRate: number;
+  /** Say nothing through the built-in speakers. On, buddy only speaks into
+   *  headphones, where what it read off the screen reaches one person. */
+  speechHeadphonesOnly: boolean;
+
   // M5 — buddy learns you.
   /** Learn durable facts about the person from what buddy watches and from
    *  the runs it does, and use them when it reads the screen, answers a
@@ -336,6 +357,13 @@ export const DEFAULT_SETTINGS: Settings = {
   anthropicModels: {},
   voiceEnabled: false,
   voiceInstructionsAutoStart: true,
+  speechEnabled: false,
+  speakGoals: true,
+  speakAnswers: true,
+  speakRuns: true,
+  speechVoice: '',
+  speechRate: 0.5,
+  speechHeadphonesOnly: true,
   learningEnabled: true,
   handsOffDefault: false,
   islandEnabled: true,
@@ -897,6 +925,17 @@ export interface VoiceStatus {
   /** Enabled, not resting, and still not listening — said in words the user
    *  can act on. */
   problem: string | null;
+}
+
+/** Whether buddy is speaking, and what it last said or could not say. */
+export interface SpeechState {
+  enabled: boolean;
+  speaking: boolean;
+  /** The last sentence, so the UI can show what was said rather than only
+   *  that something was. */
+  lastSaid: string;
+  /** Why the last thing was not said out loud, as buddyd's reason code. */
+  lastSkip: string | null;
 }
 
 /** What a heard utterance asks for, once the wake phrase and the fillers are

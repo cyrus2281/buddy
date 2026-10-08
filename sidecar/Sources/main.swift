@@ -126,6 +126,20 @@ func handle(_ req: RPCRequest) {
         catch let e as RPCError { Out.error(id: req.id, e) }
         catch { Out.error(id: req.id, .internalError(String(describing: error))) }
 
+    case "speak":
+        do { Out.result(id: req.id, try Speak.speak(req.params)) }
+        catch let e as RPCError { Out.error(id: req.id, e) }
+        catch { Out.error(id: req.id, .internalError(String(describing: error))) }
+
+    case "speak_stop":
+        Out.result(id: req.id, Speak.stop())
+
+    case "speak_status":
+        Out.result(id: req.id, Speak.status())
+
+    case "speak_voices":
+        Out.result(id: req.id, Speak.voices(req.params))
+
     case "voice_stop":
         Out.result(id: req.id, Voice.stop())
 

@@ -701,7 +701,7 @@ Each is an interface defined and used in v1 with a single implementation behind 
 | Vector note search | **Built in M5.** `Embedder` (`memory/embed.ts`) with one implementation, a static Model2Vec model run in TypeScript; sqlite-vec as the accelerator; `hybridSearch` behind `NoteSearch`. See §4.2. |
 | Spoken instructions | **Built after M7.** "Hey buddy, <instruction>" (or "hey buddy", a pause, then the instruction) becomes the goal in the person's words, with named apps added to the allowlist; a 3 s visible countdown or a go-ahead starts it. Small talk and questions are filtered (`voice/match.ts`); routing is `routeInstruction` in `voice/route.ts`. See README, "Voice". |
 | Wake-word activation | **Built after M4.** `activate(source)` in `index.ts` is the seam, with the hotkey and "hey buddy" as its two triggers. `buddyd` transcribes on-device only (`Voice.swift`); `src/main/voice/` decides what was meant and where it goes; the HUD applies a stricter rule than Enter (`shared/voice.ts`). See README, "Voice". |
-| TTS / STT | `VoiceIO` interface, no-op impl. HUD already renders buddy's goal text as a discrete speakable unit. |
+| TTS / STT | **Output side built after M8.** `AVSpeechSynthesizer` in `sidecar/Sources/Speak.swift`; what is worth saying and when is `shared/speech.ts` + `main/voice/speech.ts`. Three switchable moments (the read goal, an Ask answer, a run asking or ending), the room rules enforced in buddyd, and an echo window so buddy does not take its own voice as a command. See README, "Voice replies". |
 | More providers | `Provider` interface with capability flags `{computerUse, vision, structuredOutput, cheapBulk}`. Anthropic is the only one with `computerUse: true`; the Operator hard-requires it and the UI says so. |
 | More sensors | `Sensor` interface producing T0 signals. `ScreenSensor` in v1; clipboard, calendar, and browser history are siblings. |
 | Ask-about-my-day | v1 is FTS5 + notes into context. Swapping in RAG is a `NoteSearch` implementation change. *M5 made that change, and added learned facts and past runs to the context.* |
@@ -992,6 +992,22 @@ often it has been right about a kind of task before it is asked to act on one.
 is computed from runs written through the real `runs`, `run_steps` and
 `episodes` stores, and the last two checks read the real `buddyd`. See README,
 "Where was I?" and "Shadow mode".
+
+### M9 — Voice replies
+
+`AVSpeechSynthesizer` behind §9's `VoiceIO` seam · three switchable moments ·
+an unsure reading spoken as a question rather than a statement · screen text
+rewritten to be heard (ticket keys, channels, links, paths, markdown,
+citations) · **where the sound goes enforced in buddyd**: headphones only by
+default, and silent while something else has the microphone · an echo window
+that ignores a go-ahead heard while buddy is speaking but never an addressed
+stop · a speaking flag that heals itself if an end event is lost.
+**Exit:** buddy can be left alone and still tell you when it needs you, without
+telling the room.
+
+**Status: built and verified** — `npm run check:speech`, 18 checks; the last
+five drive the real `buddyd`, including one sentence really synthesized (
+silently unless `BUDDY_SPEAK_ALOUD=1`).
 
 ### Honest read on the timeline
 

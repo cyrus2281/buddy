@@ -58,8 +58,25 @@ export function routeInstruction(
 
 export function routeIntent(
   intent: VoiceIntent,
-  at: { running: boolean; hudVisible: boolean; state: AppState; armedAt: number; now: number },
+  at: {
+    running: boolean;
+    hudVisible: boolean;
+    state: AppState;
+    armedAt: number;
+    now: number;
+    /** buddy is speaking, or has just stopped — so what was heard may be
+     *  buddy's own voice coming back through the microphone. */
+    echoing?: boolean;
+  },
 ): { action: VoiceAction; why: string } {
+  // What buddy reads aloud is arbitrary text off someone's screen, and "reply
+  // saying go ahead" is a sentence that would otherwise start a run. So while
+  // it is talking, only something addressed to it by name counts — and a stop
+  // still does, because the moment you most want to interrupt is while it is
+  // talking.
+  if (at.echoing && !(intent.kind === 'cancel' && intent.addressed)) {
+    return { action: 'ignore', why: 'buddy is speaking; say "buddy, stop" to interrupt' };
+  }
   if (intent.kind === 'cancel') {
     if (at.running) {
       return intent.addressed

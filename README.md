@@ -52,6 +52,10 @@ and running it or typing over it is the answer. buddy counts both, per kind of
 task, and says so before you commit: what it reads well, and what it keeps
 getting wrong.
 
+**And it can answer out loud.** buddy reads out the goal it has just read off
+your screen, the answers you ask for, and the moment a run needs you — through
+headphones, so what came off your screen reaches one person.
+
 The typed goal is still there. It is now the override, not the entry point.
 
 ## Requirements
@@ -258,6 +262,71 @@ exposes through accessibility is the app's decision: a canvas, a game or a
 thin Electron UI gives hands-off little to act on, which is why it is a switch
 per run rather than the only way buddy works.
 
+## Voice replies — buddy saying things out loud
+
+**Off by default.** Turn it on in Settings › Voice › *Say things out loud*.
+`AVSpeechSynthesizer`, synthesized on this Mac by macOS, exactly as recognition
+is — nothing is sent anywhere. It is PRD §9's `VoiceIO` seam, filled in on the
+output side.
+
+Three moments, each switchable on its own:
+
+- **The goal it read**, when the HUD opens — but never the ~200 ms provisional
+  guess, only the model's reading. Below the confidence line (§6.1 step 6) the
+  HUD is asking rather than proposing, so the sentence is a question too:
+  *"File SAM 4412? Or reply to Priya?"* Reading a guess aloud as a statement is
+  how someone ends up agreeing to something buddy said it was not sure about.
+- **Answers from the Ask box**, without the citation chips — those are for the
+  eye.
+- **When a run asks or ends.** This is the one that earns the feature: unattended
+  and hands-off exist so you can be somewhere else, and a run that stops to ask
+  is otherwise silent until you look.
+
+Esc, the abort hotkey and "buddy, stop" all stop it mid-sentence.
+
+### Who else is in the room
+
+Speaking is the one thing buddy does that other people can hear, and everything
+it has to say was read off your screen — which is the thing §5.2 is careful
+about. So the rules about *where the sound goes* are enforced in buddyd, below
+the layer that decides what to say:
+
+- **Through headphones, what buddy says reaches one person.** Through the
+  built-in speakers it is in the room, and if you are on a call it is
+  transmitted. **Only through headphones** is on by default; Settings shows what
+  the sound is going to right now and how buddy reads it.
+- **Not while somebody is on a call.** With the headphones rule off, buddy still
+  stays quiet while something has the microphone open. There is one honest hole:
+  with "hey buddy" listening, buddy's own microphone is what is open and macOS
+  does not say who — so buddy is told that it is the one holding it, and the
+  mic rule stands down. Headphones are the answer there, and Settings says so.
+
+### Not listening to itself
+
+With "hey buddy" on, the microphone is open while the speakers are going, and
+the goal buddy is reading aloud is arbitrary text off a screen — *"reply saying
+go ahead"* is a sentence that would otherwise start a run. So while buddy is
+speaking, and for 1.8 s after (the recognizer finishes an utterance ~0.9 s after
+the sound stops), a go-ahead or a spoken instruction is ignored — **but
+"buddy, stop" still works**, because the moment you most want to interrupt is
+while it is talking.
+
+If an end event never arrives — buddyd dies mid-sentence — buddy assumes it has
+stopped after 90 seconds rather than suppressing voice commands for the rest of
+the session with nothing in the log.
+
+### Said to be heard, not read
+
+`SAM-4412` read literally is "sam dash four four one two"; `#sam-eng` is "hash
+sam dash eng"; a URL is forty seconds of punctuation. So text is rewritten
+before it is spoken: ticket keys lose the dash, `#channel` becomes "the channel"
+, links become "a link", paths become their last component, markdown and
+citation chips come out, and a long answer stops at a sentence rather than
+trailing off mid-clause. Which voice is used is the best one installed,
+preferring the one you chose in System Settings — and when only the compact
+voices are present, Settings says where the good ones are, because they are a
+free download and they are the whole difference.
+
 ## Where was I?
 
 **On by default; Settings › Where was I?.** PRD §2 prices the problem at twenty
@@ -426,6 +495,7 @@ state and the ghost on this screen.
 | `npm run check:m4` | The M4 exit-criteria checks (50 of them) |
 | `npm run check:voice` | The "hey buddy" checks (26 of them) — matcher, routing, the listener, and the real `buddyd` |
 | `npm run check:memory` | The M5 checks (39 of them) — the real embedder, the real sqlite-vec index, retrieval quality on a benchmark, learning through a scripted rollup |
+| `npm run check:speech` | The voice-reply checks (18 of them) — what it says, when it says it, and a real sentence through the real `buddyd`. `BUDDY_SPEAK_ALOUD=1` to hear it |
 | `npm run check:restore` | The "Where was I?" and shadow-mode checks (20 of them) — the plan, the exclusion filter, the tracker, the score against real runs, and two against the real `buddyd` |
 | `npm run check:island` | The island and ghost-cursor checks (15 of them) — placement, every state, the ghost's contract with the executor, and real captures. `BUDDY_ISLAND_TOUR=<dir>` also photographs every state |
 | `npm run check:hands` | The hands-off checks (26 of them) — the tool surface, the guardrails against the named app, the loop, and a real press, value and window capture through the real `buddyd` |
