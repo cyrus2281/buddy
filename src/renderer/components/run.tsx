@@ -56,6 +56,19 @@ export function describeStep(s: RunStep): string {
         : `Typed “${truncate(String(input.text ?? ''), 40)}” into ${appLabel(input.app)}`;
     case 'open':
       return `Opened ${input.url ? `${truncate(String(input.url), 40)} in ` : ''}${appLabel(input.app)} in the background`;
+    // The cua backend: cua-driver's tools, by pid and window.
+    case 'cua':
+      return 'Working in the background through cua-driver — keep using your Mac';
+    case 'get_window_state':
+      return `Looked at ${target || 'the front window'}`;
+    case 'type_text':
+      return `Typed “${truncate(String(input.text ?? ''), 40)}”${target ? ` into ${target}` : ''}`;
+    case 'press_key':
+      return `Pressed ${[...((input.modifiers as string[] | undefined) ?? []), String(input.key ?? '')].join('+')}`;
+    case 'hotkey':
+      return `Pressed ${((input.keys as string[] | undefined) ?? []).join('+')}`;
+    case 'launch_app':
+      return `Opened ${appLabel(input.bundle_id)} in the background`;
     case 'resume':
       return `Woke up and carried on — ${truncate(String(input.condition ?? ''), 50)}`;
     case 'human-input':

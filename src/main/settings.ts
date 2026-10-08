@@ -144,6 +144,10 @@ class SettingsStore extends EventEmitter {
     out.islandEnabled = out.islandEnabled !== false;
     out.ghostCursor = out.ghostCursor !== false;
     if (out.islandPlacement !== 'main') out.islandPlacement = 'notch';
+    // The toolset is the shipping path; anything that is not exactly `cua` —
+    // a blob from before the setting existed, a typo — runs on it.
+    if (out.operatorBackend !== 'cua') out.operatorBackend = 'toolset';
+    if (!['anthropic', 'openai', 'local'].includes(out.operatorProvider)) out.operatorProvider = 'anthropic';
     if (out.defaultProfile !== 'attended' && out.defaultProfile !== 'unattended') {
       // §7.1: leashless is never a default. A stored blob that says otherwise —
       // an older version, a hand-edited database — is corrected rather than

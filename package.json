@@ -20,13 +20,16 @@
     "eval:record": "electron-vite build && electron out/main/record.js",
     "eval:goal:shots": "tsx evals/goal-inference/run.ts --fixture .shot",
     "check:m4": "electron-vite build && electron out/main/m4-checks.js",
+    "check:m5": "electron-vite build && electron out/main/m5-checks.js",
     "check:voice": "electron-vite build && electron out/main/voice-checks.js",
     "check:memory": "npm run fetch:model && electron-vite build && electron out/main/memory-checks.js",
     "check:hands": "electron-vite build && electron out/main/hands-checks.js",
     "check:island": "electron-vite build && electron out/main/island-checks.js",
     "live:run": "electron-vite build && electron out/main/live-run.js",
+    "live:cua": "electron-vite build && electron out/main/live-cua.js",
     "live:standby": "electron-vite build && electron out/main/live-standby.js",
-    "live:learn": "npm run fetch:model && electron-vite build && electron out/main/live-learn.js"
+    "live:learn": "npm run fetch:model && electron-vite build && electron out/main/live-learn.js",
+    "cua:schemas": "node scripts/cua-schemas.mjs"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.125.0",

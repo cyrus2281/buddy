@@ -12,6 +12,7 @@ import { hotkeys } from './hotkey.js';
 import { broadcast, createHome, createHud, hideHud, setHudSticky, showHud, showHudPassive, toggleHud, isHudVisible } from './windows.js';
 import { registerIpc, assertCoordinateScale, setHotkeyIssues } from './ipc.js';
 import { operator } from './agent/orchestrator.js';
+import { cuaDriver } from './cua/driver.js';
 import { NotesEngine } from './notes/engine.js';
 import { memory } from './memory/service.js';
 import { Activation } from './agent/activation.js';
@@ -194,6 +195,7 @@ async function main() {
   // catches up on anything written since last time in the background.
   memory.open();
   operator.setMemoryProvider((goal) => memory.forRun(goal));
+  operator.setSpendSink((usd) => engine.spend.record('operator', usd));
 
   // Menu-bar app: no Dock icon, no windows on launch. Observation is the
   // default mode, and it should not require a window to be open.
@@ -588,6 +590,8 @@ app.on('will-quit', async (e) => {
   island.stop();
   scheduler?.stop();
   await sidecar.stop();
+  // Only buddy's proxy to it: the CuaDriver.app daemon is shared and stays up.
+  await cuaDriver.stop();
   closeDb();
   app.exit(0);
 });

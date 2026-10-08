@@ -7,6 +7,9 @@ import { AnthropicClient, type ModelClient } from './client.js';
 import { killSwitches } from './killswitch.js';
 import { AgentRunner, type ResumeRunRequest } from './runner.js';
 import { Executor } from './executor.js';
+import { CuaExecutor } from '../cua/executor.js';
+import { cuaDriver } from '../cua/driver.js';
+import { cuaOperatorSetup } from './operator-setup.js';
 import { NO_ANTHROPIC_KEY, anthropicBaseUrl } from '../providers.js';
 import type { GateAnswer, GhostIntent, KillSwitch, PendingGate, RunStep, RunView, StartRunRequest } from '../../shared/types.js';
 
@@ -21,7 +24,8 @@ import type { GateAnswer, GhostIntent, KillSwitch, PendingGate, RunStep, RunView
 export class Operator extends EventEmitter {
   private current: AgentRunner | null = null;
   private clientFactory: (() => ModelClient) | null = null;
-  private executorFactory: (() => Executor) | null = null;
+  private executorFactory: (() => Executor | CuaExecutor) | null = null;
+  private spendSink: ((usd: number) => void) | null = null;
   private memoryProvider: ((goal: string) => string | null) | null = null;
   private intentSink: ((i: GhostIntent) => void) | null = null;
 
@@ -42,8 +46,14 @@ export class Operator extends EventEmitter {
    *  checks construct their runner directly and do not need this; M4 goes
    *  through the Operator because "the same run, continuing" is a fact about
    *  the orchestrator's bookkeeping as much as the runner's. */
-  setExecutorFactory(f: (() => Executor) | null) {
+  setExecutorFactory(f: (() => Executor | CuaExecutor) | null) {
     this.executorFactory = f;
+  }
+
+  /** The daily spend meter (PRD R5). Set at launch; every run reports each
+   *  turn's cost to it. Unset in the checks that do not ask for it. */
+  setSpendSink(f: ((usd: number) => void) | null) {
+    this.spendSink = f;
   }
 
   /** M5. Set at launch to `memory.forRun`. Unset in the checks that do not
@@ -78,16 +88,18 @@ export class Operator extends EventEmitter {
       );
     }
 
+    const cua = await this.cuaSetup();
     const client = this.clientFactory
       ? this.clientFactory()
-      : (() => {
+      : (cua?.client ??
+        (() => {
           const key = secrets.get('anthropic');
           // One sentence with one author: `providers.operatorAvailability()`
           // shows the user exactly this, so the Settings screen and the guard
           // cannot disagree about why activation is unavailable (§9.1).
           if (!key) throw new Error(NO_ANTHROPIC_KEY);
           return new AnthropicClient(key, anthropicBaseUrl());
-        })();
+        })());
 
     // §7.1: leashless has no allowlist. Cleared here as well as in the HUD, for
     // the same reason the `leashlessEnabled` check lives here — the HUD is one
@@ -98,7 +110,7 @@ export class Operator extends EventEmitter {
       req = { ...req, allowlist: { apps: [], domains: [] } };
     }
 
-    const runner = this.attach(this.build(client));
+    const runner = this.attach(this.build(client, cua));
     const onFired = this.armKillSwitches(runner);
     try {
       return await runner.run(req);
@@ -124,15 +136,17 @@ export class Operator extends EventEmitter {
     if (this.isRunning()) {
       throw new Error('A run is already in progress, so the standby resume was skipped.');
     }
+    const cua = await this.cuaSetup();
     const client = this.clientFactory
       ? this.clientFactory()
-      : (() => {
+      : (cua?.client ??
+        (() => {
           const key = secrets.get('anthropic');
           if (!key) throw new Error(NO_ANTHROPIC_KEY);
           return new AnthropicClient(key, anthropicBaseUrl());
-        })();
+        })());
 
-    const runner = this.attach(this.build(client));
+    const runner = this.attach(this.build(client, cua));
     const onFired = this.armKillSwitches(runner);
     try {
       return await runner.resume(req);
@@ -142,8 +156,28 @@ export class Operator extends EventEmitter {
     }
   }
 
-  private build(client: ModelClient): AgentRunner {
-    const executor = this.executorFactory ? this.executorFactory() : new Executor();
+  /**
+   * The cua backend's model and pricing, and cua-driver itself started and
+   * granted — before a run row exists, so a missing binary or a missing grant
+   * is the one clear sentence at the hotkey rather than a run that parks on
+   * its first step. Null on the toolset backend, whose path is unchanged.
+   */
+  private async cuaSetup(): Promise<ReturnType<typeof cuaOperatorSetup> | null> {
+    if (settings.get().operatorBackend !== 'cua') return null;
+    if (this.clientFactory && this.executorFactory) return null; // the checks supply both
+    const setup = this.clientFactory ? null : cuaOperatorSetup();
+    if (!this.executorFactory) await cuaDriver.ensureStarted();
+    if (setup) log.info('agent', 'cua backend', { provider: setup.provider, model: setup.model, metering: setup.priceBasis });
+    return setup;
+  }
+
+  private build(client: ModelClient, cua: ReturnType<typeof cuaOperatorSetup> | null = null): AgentRunner {
+    const backend = settings.get().operatorBackend;
+    const executor = this.executorFactory
+      ? this.executorFactory()
+      : backend === 'cua'
+        ? new CuaExecutor()
+        : new Executor();
     const sink = this.intentSink;
     if (sink && !executor.intents) {
       executor.intents = {
@@ -153,11 +187,18 @@ export class Operator extends EventEmitter {
         leadMs: () => (settings.get().ghostCursor ? settings.get().ghostLeadMs : 0),
       };
     }
+    const spend = this.spendSink;
     return new AgentRunner({
       client,
       killSwitches,
       executor,
       ...(this.memoryProvider ? { memory: this.memoryProvider } : {}),
+      ...(cua ? { model: cua.model, price: cua.price } : {}),
+      // Every turn goes on the daily meter, whichever backend ran it — the meter
+      // tells the whole truth (PRD R5). The cap never stops a run: only T2 and
+      // T3 ask `SpendMeter.allow()`, so a run's spend can pause observation for
+      // the rest of the day but cannot pause the run.
+      ...(spend ? { onSpend: (usd: number) => spend(usd) } : {}),
     });
   }
 

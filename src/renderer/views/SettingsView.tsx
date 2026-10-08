@@ -989,8 +989,72 @@ function ProviderPanel({
       );
   };
 
+  const cua = settings.operatorBackend === 'cua';
+  const operatorLabel = providers.find((p) => p.id === settings.operatorProvider)?.label ?? settings.operatorProvider;
+  const operatorModel =
+    settings.operatorProvider === 'openai'
+      ? settings.openaiModel
+      : settings.operatorProvider === 'local'
+        ? settings.localModel
+        : modelId(settings, 'operator');
+
   return (
     <Card className="flex flex-col gap-4 p-4">
+      <Field
+        label="Operator backend"
+        hint="How a run reaches the machine. The toolset is the shipping path. cua is a spike: cua-driver's tools as ordinary function tools, so a gateway that rejects the toolset can carry it, and so can a non-Claude model."
+      >
+        <div className="flex gap-2">
+          {(['toolset', 'cua'] as const).map((b) => (
+            <button
+              key={b}
+              onClick={() => void update({ operatorBackend: b })}
+              className={`no-drag flex-1 rounded-lg border px-3 py-2 text-left transition-colors ${
+                settings.operatorBackend === b
+                  ? 'border-ember-500/60 bg-ember-500/10'
+                  : 'border-ink-700 bg-ink-900 hover:border-ink-600'
+              }`}
+            >
+              <span className="text-[12px] font-medium text-fog-100">
+                {b === 'toolset' ? 'Claude computer toolset' : 'cua-driver (spike)'}
+              </span>
+              <span className="mt-0.5 block text-[11px] leading-snug text-fog-500">
+                {b === 'toolset'
+                  ? 'computer_toolset_20260801 on Claude, executed by buddyd. Claude-only.'
+                  : 'Plain function tools, executed by cua-driver in the background. Any provider below.'}
+              </span>
+            </button>
+          ))}
+        </div>
+      </Field>
+
+      {cua && (
+        <div className="grid gap-4 sm:grid-cols-2">
+          <Field label="Operator provider" hint="Which model drives. It needs tool calling and vision.">
+            <select
+              value={settings.operatorProvider}
+              onChange={(e) => void update({ operatorProvider: e.target.value as ProviderId })}
+              className="no-drag w-full rounded-lg border border-ink-700 bg-ink-900 px-2.5 py-1.5
+                         text-[12px] text-fog-100 outline-none focus:border-ember-500/70"
+            >
+              {providers
+                .filter((p) => p.capabilities.functionTools && p.capabilities.vision)
+                .map((p) => (
+                  <option key={p.id} value={p.id}>
+                    {p.label}
+                    {p.configured ? '' : ' — not set up'}
+                  </option>
+                ))}
+            </select>
+          </Field>
+          <p className="self-end text-[11px] leading-relaxed text-fog-500">
+            cua-driver has its own Accessibility and Screen Recording grants, held by CuaDriver.app
+            rather than buddy — grant them once with{' '}
+            <span className="font-mono">cua-driver permissions grant</span>.
+          </p>
+        </div>
+      )}
+
       <div className="overflow-x-auto">
         <table className="w-full border-collapse text-left text-[11px]">
           <thead>
@@ -1012,7 +1076,9 @@ function ProviderPanel({
                   </span>
                 </td>
                 <td className="py-2 pr-3">
-                  {p.capabilities.computerUse ? (
+                  {cua && p.capabilities.functionTools ? (
+                    <span className="text-moss-400">yes — via cua-driver</span>
+                  ) : !cua && p.capabilities.computerUse ? (
                     <span className="text-moss-400">yes</span>
                   ) : (
                     <span className="text-fog-500">
@@ -1064,7 +1130,13 @@ function ProviderPanel({
             : 'border-ember-500/40 bg-ember-500/10 text-ember-300'
         }`}
       >
-        {operator?.available ? (
+        {operator?.available && cua ? (
+          <>
+            <span className="font-medium">The hotkey can take over the machine.</span> The Operator
+            runs on <span className="font-mono">{operatorModel}</span> ({operatorLabel}) through
+            cua-driver, with plain function tools and input delivered in the background.
+          </>
+        ) : operator?.available ? (
           <>
             <span className="font-medium">The hotkey can take over the machine.</span> Computer use
             runs on <span className="font-mono">{modelId(settings, 'operator')}</span> with{' '}
@@ -1098,7 +1170,9 @@ function ProviderPanel({
         </Field>
       </div>
 
-      {(settings.observerProvider === 'openai' || settings.qaProvider === 'openai') && (
+      {(settings.observerProvider === 'openai' ||
+        settings.qaProvider === 'openai' ||
+        (cua && settings.operatorProvider === 'openai')) && (
         <div className="grid gap-4 sm:grid-cols-2">
           <Field label="OpenAI endpoint" hint="Blank means api.openai.com/v1. Set it for Azure or a gateway that speaks the same /chat/completions route.">
             <MonoInput
@@ -1117,7 +1191,9 @@ function ProviderPanel({
         </div>
       )}
 
-      {(settings.observerProvider === 'local' || settings.qaProvider === 'local') && (
+      {(settings.observerProvider === 'local' ||
+        settings.qaProvider === 'local' ||
+        (cua && settings.operatorProvider === 'local')) && (
         <div className="grid gap-4 sm:grid-cols-2">
           <Field label="Local endpoint" hint="OpenAI-compatible. Ollama serves this at /v1.">
             <MonoInput

@@ -31,6 +31,9 @@ export interface Frame {
   originX: number;
   originY: number;
   displayId: number;
+  /** What the bytes are. Absent means PNG, which is everything buddyd
+   *  captures; cua-driver's `zoom` returns JPEG. */
+  mediaType?: 'image/png' | 'image/jpeg';
 }
 
 export type ExecOutcome =
@@ -102,6 +105,10 @@ const GHOST_KIND: Record<string, GhostIntent['kind']> = {
 };
 
 export class Executor {
+  /** Which Operator backend this is. The runner reads it to pick the tool
+   *  surface and the opening, so the loop itself is not forked. */
+  readonly kind = 'toolset' as const;
+
   /** Monotonic across the run, so every screenshot has its own file and the Run
    *  Log can show the screen at each step. */
   private frameSeq = 0;

@@ -233,7 +233,9 @@ export function registerIpc(ctx: Ctx) {
       return null;
     }
     try {
-      return `data:image/png;base64,${fs.readFileSync(resolved).toString('base64')}`;
+      // cua-driver's `zoom` frames are JPEG (cua backend); everything else is PNG.
+      const mime = resolved.endsWith('.jpg') ? 'image/jpeg' : 'image/png';
+      return `data:${mime};base64,${fs.readFileSync(resolved).toString('base64')}`;
     } catch {
       return null;
     }

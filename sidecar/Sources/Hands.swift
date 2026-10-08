@@ -341,6 +341,16 @@ enum Hands {
             AXUIElementGetPid(e, &pid)
         } else {
             pid = try runningApp(params).processIdentifier
+            // A screen point, hit-tested by *that* app rather than system-wide.
+            // The cua backend acts on windows that are behind others, and the
+            // system-wide hit test answers with whatever is on top — the
+            // person's editor, not the Send button buddy is about to press.
+            if let x = params["x"]?.doubleValue, let y = params["y"]?.doubleValue {
+                var ref: AXUIElement?
+                if AXUIElementCopyElementAtPosition(AXUIElementCreateApplication(pid), Float(x), Float(y), &ref) == .success {
+                    el = ref
+                }
+            }
         }
         let app = NSRunningApplication(processIdentifier: pid)
         let bundleId = app?.bundleIdentifier ?? ""
